@@ -15,8 +15,8 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://turf-tracker-dev1.netlify.app",  # this is your frontend
-        "http://localhost:3000"                   # for local testing
+        "https://turf-irrigation-dev1.netlify.app",  # ✅ NEW DOMAIN
+        "http://localhost:3000"
     ],
     allow_credentials=True,
     allow_methods=["*"],
