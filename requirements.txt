@@ -6,6 +6,7 @@ charset-normalizer==3.4.1
 click==8.1.8
 colorama==0.4.6
 fastapi==0.115.12
+sqlalchemy==2.0.30
 h11==0.14.0
 idna==3.10
 Jinja2==3.1.6
@@ -31,3 +32,4 @@ tzdata==2025.2
 urllib3==2.4.0
 uvicorn==0.34.0
 xgboost==3.0.0
+psycopg2-binary==2.9.9
