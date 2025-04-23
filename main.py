@@ -151,11 +151,26 @@ def get_predicted_moisture():
     df_weather.dropna(subset=["timestamp"], inplace=True)
     df_weather.set_index("timestamp", inplace=True)
 
-    df_irrig = load_irrigation_dataframe().set_index("timestamp")
-    df_moist = load_moisture_dataframe().set_index("timestamp")
+    # 🔄 Load irrigation and moisture from Supabase
+    db = SessionLocal()
+    irrigation_entries = db.query(IrrigationLog).order_by(IrrigationLog.timestamp).all()
+    moisture_entries = db.query(MoistureLog).order_by(MoistureLog.timestamp).all()
+    db.close()
 
+    df_irrig = pd.DataFrame([
+        {"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm}
+        for e in irrigation_entries
+    ]).set_index("timestamp")
+
+    df_moist = pd.DataFrame([
+        {"timestamp": e.timestamp, "moisture_mm": e.moisture_mm}
+        for e in moisture_entries
+    ]).set_index("timestamp")
+
+    # 🔗 Combine forecast and irrigation
     df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
     df = df.sort_index()
+
     print("📅 Forecast dataframe shape:", df.shape)
 
     results = []
