@@ -160,12 +160,24 @@ def get_predicted_moisture():
     df_irrig = pd.DataFrame([
         {"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm}
         for e in irrigation_entries
-    ]).set_index("timestamp")
+    ])
+
+    if not df_irrig.empty:
+        df_irrig.set_index("timestamp", inplace=True)
+    else:
+        df_irrig = pd.DataFrame(columns=["irrigation_mm"])
+        df_irrig.index.name = "timestamp"
 
     df_moist = pd.DataFrame([
         {"timestamp": e.timestamp, "moisture_mm": e.moisture_mm}
         for e in moisture_entries
-    ]).set_index("timestamp")
+    ])
+
+    if not df_moist.empty:
+        df_moist.set_index("timestamp", inplace=True)
+    else:
+        df_moist = pd.DataFrame(columns=["moisture_mm"])
+        df_moist.index.name = "timestamp"
 
     # 🔗 Combine forecast and irrigation
     df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
