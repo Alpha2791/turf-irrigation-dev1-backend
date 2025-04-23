@@ -1,21 +1,22 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 import requests
-import sqlite3
-import math
 import pandas as pd
 import joblib
 import xgboost as xgb
 import os
+
+from models import MoistureLog, IrrigationLog
+from database import Base, engine, SessionLocal
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://turf-irrigation-dev1.netlify.app",  # ✅ NEW DOMAIN
+        "https://turf-irrigation-dev1.netlify.app",
         "http://localhost:3000"
     ],
     allow_credentials=True,
@@ -23,7 +24,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_FILE = "data.db"
 MODEL_FILE = "moisture_model.pkl"
 LATITUDE = 52.281624
 LONGITUDE = -0.943448
@@ -40,53 +40,64 @@ class IrrigationEntry(BaseModel):
 
 @app.on_event("startup")
 def startup():
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS moisture (
-            timestamp TEXT PRIMARY KEY,
-            moisture_mm REAL)''')
-        cursor.execute('''CREATE TABLE IF NOT EXISTS irrigation (
-            timestamp TEXT PRIMARY KEY,
-            irrigation_mm REAL)''')
+    Base.metadata.create_all(bind=engine)
 
 @app.post("/log-moisture")
-def log_moisture(entry: MoistureEntry):
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO moisture VALUES (?, ?)", (entry.timestamp, entry.moisture_mm))
-        conn.commit()
-    train_model()  # Retrain automatically on new moisture data
-    return {"message": "Moisture logged successfully and model retrained"}
+def log_moisture(timestamp: str = Body(...), moisture_mm: float = Body(...)):
+    db = SessionLocal()
+    dt = datetime.fromisoformat(timestamp)
+    entry = MoistureLog(timestamp=dt, moisture_mm=moisture_mm)
+    db.merge(entry)
+    db.commit()
+    db.close()
+    return {"status": "moisture logged"}
 
 @app.get("/moisture-log")
 def get_moisture_log():
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM moisture ORDER BY timestamp DESC")
-        rows = cursor.fetchall()
-        return [{"timestamp": row[0], "moisture_mm": row[1]} for row in rows]
+    db = SessionLocal()
+    entries = db.query(MoistureLog).order_by(MoistureLog.timestamp.desc()).all()
+    db.close()
+    return [{"timestamp": e.timestamp.isoformat(), "moisture_mm": e.moisture_mm} for e in entries]
 
 @app.post("/log-irrigation")
-def log_irrigation(entry: IrrigationEntry):
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO irrigation VALUES (?, ?)", (entry.timestamp, entry.irrigation_mm))
-        conn.commit()
-    return {"message": "Irrigation logged successfully"}
+def log_irrigation(timestamp: str = Body(...), irrigation_mm: float = Body(...)):
+    db = SessionLocal()
+    dt = datetime.fromisoformat(timestamp)
+    entry = IrrigationLog(timestamp=dt, irrigation_mm=irrigation_mm)
+    db.merge(entry)
+    db.commit()
+    db.close()
+    return {"status": "irrigation logged"}
 
 @app.get("/irrigation-log")
 def get_irrigation_log():
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM irrigation ORDER BY timestamp DESC")
-        rows = cursor.fetchall()
-        return [{"timestamp": row[0], "irrigation_mm": row[1]} for row in rows]
+    db = SessionLocal()
+    entries = db.query(IrrigationLog).order_by(IrrigationLog.timestamp.desc()).all()
+    db.close()
+    return [{"timestamp": e.timestamp.isoformat(), "irrigation_mm": e.irrigation_mm} for e in entries]
+
+def load_moisture_dataframe():
+    db = SessionLocal()
+    entries = db.query(MoistureLog).all()
+    db.close()
+    return pd.DataFrame([{
+        "timestamp": e.timestamp,
+        "moisture_mm": e.moisture_mm
+    } for e in entries])
+
+def load_irrigation_dataframe():
+    db = SessionLocal()
+    entries = db.query(IrrigationLog).all()
+    db.close()
+    return pd.DataFrame([{
+        "timestamp": e.timestamp,
+        "irrigation_mm": e.irrigation_mm
+    } for e in entries])
 
 @app.get("/train-model")
 def train_model():
-    with sqlite3.connect(DB_FILE) as conn:
-        df_moist = pd.read_sql_query("SELECT * FROM moisture", conn, parse_dates=["timestamp"])
-        df_irrig = pd.read_sql_query("SELECT * FROM irrigation", conn, parse_dates=["timestamp"])
+    df_moist = load_moisture_dataframe()
+    df_irrig = load_irrigation_dataframe()
 
     df = pd.merge(df_moist.sort_values("timestamp"), df_irrig, how="left", on="timestamp").fillna(0)
     df["prev_moisture"] = df["moisture_mm"].shift(1)
@@ -140,11 +151,8 @@ def get_predicted_moisture():
     df_weather.dropna(subset=["timestamp"], inplace=True)
     df_weather.set_index("timestamp", inplace=True)
 
-    with sqlite3.connect(DB_FILE) as conn:
-        df_irrig = pd.read_sql_query("SELECT * FROM irrigation", conn, parse_dates=["timestamp"])
-        df_irrig.set_index("timestamp", inplace=True)
-        df_moist = pd.read_sql_query("SELECT * FROM moisture", conn, parse_dates=["timestamp"])
-        df_moist.set_index("timestamp", inplace=True)
+    df_irrig = load_irrigation_dataframe().set_index("timestamp")
+    df_moist = load_moisture_dataframe().set_index("timestamp")
 
     df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
     df = df.sort_index()
