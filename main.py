@@ -34,7 +34,19 @@ VC_API_KEY = os.getenv("2ELL5E9A47JT5XB74WGXS7PFV")
 def startup():
     Base.metadata.create_all(bind=engine)
 
-# ... [other routes unchanged] ...
+@app.get("/moisture-log")
+def get_moisture_log():
+    db = SessionLocal()
+    entries = db.query(MoistureLog).order_by(MoistureLog.timestamp.desc()).all()
+    db.close()
+    return [{"timestamp": e.timestamp.isoformat(), "moisture_mm": e.moisture_mm} for e in entries]
+
+@app.get("/irrigation-log")
+def get_irrigation_log():
+    db = SessionLocal()
+    entries = db.query(IrrigationLog).order_by(IrrigationLog.timestamp.desc()).all()
+    db.close()
+    return [{"timestamp": e.timestamp.isoformat(), "irrigation_mm": e.irrigation_mm} for e in entries]
 
 @app.get("/predicted-moisture")
 def get_predicted_moisture():
