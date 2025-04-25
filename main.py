@@ -84,10 +84,16 @@ def get_predicted_moisture():
     df_weather.dropna(subset=["timestamp"], inplace=True)
     df_weather.set_index("timestamp", inplace=True)
 
+    print("📊 Weather forecast loaded:", len(df_weather))
+    print(df_weather.head(3))
+
     db = SessionLocal()
     moisture_entries = db.query(MoistureLog).order_by(MoistureLog.timestamp).all()
     irrigation_entries = db.query(IrrigationLog).order_by(IrrigationLog.timestamp).all()
     db.close()
+
+    print("🌱 Moisture entries:", len(moisture_entries))
+    print("💧 Irrigation entries:", len(irrigation_entries))
 
     df_moist = pd.DataFrame([{"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moisture_entries])
     df_irrig = pd.DataFrame([{"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrigation_entries])
@@ -104,12 +110,19 @@ def get_predicted_moisture():
         df_irrig = pd.DataFrame(columns=["irrigation_mm"])
         df_irrig.index.name = "timestamp"
 
+    print("🧪 df_moist sample:")
+    print(df_moist.head(3))
+    print("🧪 df_irrig sample:")
+    print(df_irrig.head(3))
+
     df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
     df = df.sort_index()
 
     results = []
     last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
     sample_count = len(df_moist)
+
+    print("🔁 Starting prediction loop")
 
     for ts, row in df.iterrows():
         hour = ts.hour
@@ -140,6 +153,8 @@ def get_predicted_moisture():
         })
 
         last_pred = predicted_moisture
+
+    print("✅ Predictions generated:", len(results))
 
     return results
 
