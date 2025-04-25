@@ -62,8 +62,17 @@ def get_predicted_moisture():
 
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{LATITUDE},{LONGITUDE}/{start_date}/{end_date}?unitGroup=metric&key={VC_API_KEY}&include=hours&elements=datetime,temp,humidity,windspeed,solarradiation,precip"
         response = requests.get(url)
-        response.raise_for_status()
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Weather API error: {response.status_code} - {response.text}")
+        try:
+            data = response.json()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"JSON decode error from weather API: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Weather API error: {response.status_code} - {response.text}")
+    try:
         data = response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"JSON decode error from weather API: {str(e)}")
 
         weather_data = []
         for day in data.get("days", []):
