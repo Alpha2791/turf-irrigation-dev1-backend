@@ -28,7 +28,7 @@ MODEL_FILE = "moisture_model.pkl"
 LATITUDE = 52.281624
 LONGITUDE = -0.943448
 ELEVATION = 95
-VC_API_KEY = os.getenv("2ELL5E9A47JT5XB74WGXS7PFV")
+VC_API_KEY = "2ELL5E9A47JT5XB74WGXS7PFV"
 
 @app.on_event("startup")
 def startup():
