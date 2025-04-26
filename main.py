@@ -50,18 +50,36 @@ def get_irrigation_log():
 
 @app.get("/predicted-moisture")
 def get_predicted_moisture():
+    print("\n\n🔄 Starting /predicted-moisture endpoint")
+
+    if not os.path.exists(MODEL_FILE):
+        print("❌ Model file not found:", MODEL_FILE)
+        raise HTTPException(status_code=500, detail="Model file not found")
+
     try:
+        model = joblib.load(MODEL_FILE)
+        print("🔧 Model loaded successfully")
+
         now = datetime.utcnow()
         start_date = (now - timedelta(days=3)).strftime("%Y-%m-%d")
         end_date = (now + timedelta(days=5)).strftime("%Y-%m-%d")
 
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{LATITUDE},{LONGITUDE}/{start_date}/{end_date}?unitGroup=metric&key={VC_API_KEY}&include=hours&elements=datetime,temp,humidity,windspeed,solarradiation,precip"
+        print("📃 Weather API URL:", url)
+
         response = requests.get(url)
+        print("📣 Weather API status code:", response.status_code)
 
         if response.status_code != 200:
+            print("❌ Weather API response error:", response.text)
             raise HTTPException(status_code=500, detail=f"Weather API error: {response.status_code} - {response.text}")
 
-        data = response.json()
+        try:
+            data = response.json()
+            print("📄 Weather API response parsed successfully")
+        except Exception as e:
+            print("❌ JSON decode error:", str(e))
+            raise HTTPException(status_code=500, detail=f"JSON decode error from weather API: {str(e)}")
 
         weather_data = []
         for day in data.get("days", []):
@@ -75,10 +93,16 @@ def get_predicted_moisture():
                     "rainfall_mm": hour.get("precip", 0) or 0
                 })
 
+        if not weather_data:
+            print("❌ No weather data received.")
+            raise HTTPException(status_code=500, detail="No weather data received.")
+
         df_weather = pd.DataFrame(weather_data)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"], format="%Y-%m-%dT%H:%M", errors="coerce")
         df_weather.dropna(subset=["timestamp"], inplace=True)
         df_weather.set_index("timestamp", inplace=True)
+
+        print("🧰 Weather data shape:", df_weather.shape)
 
         db = SessionLocal()
         moisture_entries = db.query(MoistureLog).order_by(MoistureLog.timestamp).all()
@@ -87,6 +111,9 @@ def get_predicted_moisture():
 
         df_moist = pd.DataFrame([{"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moisture_entries])
         df_irrig = pd.DataFrame([{"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrigation_entries])
+
+        print("🧼 Moisture entries:", len(df_moist))
+        print("🌧️ Irrigation entries:", len(df_irrig))
 
         if not df_moist.empty:
             df_moist.set_index("timestamp", inplace=True)
@@ -103,15 +130,14 @@ def get_predicted_moisture():
         df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
         df = df.sort_index()
 
+        print("📊 Combined forecast dataframe shape:", df.shape)
+
         results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
         sample_count = len(df_moist)
 
-        print(f"🌱 Moisture sample count: {sample_count}")
-
-        use_model = os.path.exists(MODEL_FILE) and sample_count >= 50
-        if use_model:
-            model = joblib.load(MODEL_FILE)
+        print("🔢 Last logged moisture:", last_pred)
+        print("🔢 Number of samples:", sample_count)
 
         for ts, row in df.iterrows():
             hour = ts.hour
@@ -120,21 +146,24 @@ def get_predicted_moisture():
             rainfall_mm = row.get("rainfall_mm", 0)
             et_mm = row.get("ET_mm_hour", 0)
 
-            if use_model:
-                features = pd.DataFrame([{
-                    "prev_moisture": last_pred,
-                    "irrigation_mm": irrigation_mm,
-                    "hour": hour,
-                    "dayofyear": dayofyear
-                }])
+            basic_estimate = last_pred - et_mm + rainfall_mm + irrigation_mm
+
+            features = pd.DataFrame([{
+                "prev_moisture": last_pred,
+                "irrigation_mm": irrigation_mm,
+                "hour": hour,
+                "dayofyear": dayofyear
+            }])
+
+            if sample_count < 50:
+                predicted_moisture = basic_estimate
+            else:
                 model_pred = model.predict(features)[0]
-                basic_estimate = last_pred - et_mm + rainfall_mm + irrigation_mm
                 alpha = min(sample_count / 100, 1.0)
                 predicted_moisture = (alpha * model_pred) + ((1 - alpha) * basic_estimate)
-            else:
-                predicted_moisture = last_pred - et_mm + rainfall_mm + irrigation_mm
 
             predicted_moisture = max(min(predicted_moisture, 100), 0)
+
             results.append({
                 "timestamp": ts.strftime("%Y-%m-%dT%H"),
                 "ET_mm_hour": et_mm,
@@ -145,10 +174,14 @@ def get_predicted_moisture():
 
             last_pred = predicted_moisture
 
+        print(f"🌐 Returning {len(results)} forecast points.")
+
         return results
 
     except Exception as e:
+        print("❌ Unexpected error in predicted moisture:", str(e))
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
 
 @app.get("/wilt-forecast")
 def get_wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
