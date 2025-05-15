@@ -71,7 +71,7 @@ def log_irrigation(request: Request, timestamp: str = Body(...), irrigation_mm: 
 
 @app.get("/predicted-moisture")
 def get_predicted_moisture():
-    print("\u2699\ufe0f Running /predicted-moisture")
+    print("[INFO] Running /predicted-moisture")
     try:
         if not os.path.exists(MODEL_FILE):
             return []
@@ -119,13 +119,13 @@ def get_predicted_moisture():
 
         df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
         df = df.sort_index()
-        print("\ud83d\uddd3 Forecast dataframe shape:", df.shape)
+        print("[INFO] Forecast dataframe shape:", df.shape)
 
         results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
         sample_count = len(df_moist)
 
-        print("\ud83e\uddf2 Starting moisture prediction loop")
+        print("[INFO] Starting moisture prediction loop")
         for ts, row in df.iterrows():
             hour = ts.hour
             dayofyear = ts.dayofyear
@@ -160,11 +160,11 @@ def get_predicted_moisture():
 
             last_pred = predicted_moisture
 
-        print(f"\ud83d\udcca Returning {len(results)} predicted moisture points")
+        print(f"[INFO] Returning {len(results)} predicted moisture points")
         return results
 
     except Exception as e:
-        print(f"\u274c Unexpected error in predicted moisture: {str(e)}")
+        print(f"[ERROR] Unexpected error in predicted moisture: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
