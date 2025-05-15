@@ -7,7 +7,6 @@ import pandas as pd
 import joblib
 import xgboost as xgb
 import os
-import sqlite3
 
 
 from models import MoistureLog, IrrigationLog
@@ -72,7 +71,7 @@ def log_irrigation(request: Request, timestamp: str = Body(...), irrigation_mm: 
 
 @app.get("/predicted-moisture")
 def get_predicted_moisture():
-    print("⚙️ Running /predicted-moisture")
+    print("\u2699\ufe0f Running /predicted-moisture")
     try:
         if not os.path.exists(MODEL_FILE):
             return []
@@ -104,21 +103,29 @@ def get_predicted_moisture():
         df_weather.dropna(subset=["timestamp"], inplace=True)
         df_weather.set_index("timestamp", inplace=True)
 
-        with sqlite3.connect(DB_FILE) as conn:
-            df_irrig = pd.read_sql_query("SELECT * FROM irrigation", conn, parse_dates=["timestamp"])
-            df_irrig.set_index("timestamp", inplace=True)
-            df_moist = pd.read_sql_query("SELECT * FROM moisture", conn, parse_dates=["timestamp"])
-            df_moist.set_index("timestamp", inplace=True)
+        # Replace sqlite3 with SQLAlchemy queries
+        db = SessionLocal()
+        moist_entries = db.query(MoistureLog).all()
+        irrig_entries = db.query(IrrigationLog).all()
+        db.close()
+
+        df_moist = pd.DataFrame([
+            {"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moist_entries
+        ]).set_index("timestamp") if moist_entries else pd.DataFrame(columns=["moisture_mm"])
+
+        df_irrig = pd.DataFrame([
+            {"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrig_entries
+        ]).set_index("timestamp") if irrig_entries else pd.DataFrame(columns=["irrigation_mm"])
 
         df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
         df = df.sort_index()
-        print("📅 Forecast dataframe shape:", df.shape)
+        print("\ud83d\uddd3 Forecast dataframe shape:", df.shape)
 
         results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
         sample_count = len(df_moist)
 
-        print("🧪 Starting moisture prediction loop")
+        print("\ud83e\uddf2 Starting moisture prediction loop")
         for ts, row in df.iterrows():
             hour = ts.hour
             dayofyear = ts.dayofyear
@@ -153,11 +160,11 @@ def get_predicted_moisture():
 
             last_pred = predicted_moisture
 
-        print(f"📊 Returning {len(results)} predicted moisture points")
+        print(f"\ud83d\udcca Returning {len(results)} predicted moisture points")
         return results
 
     except Exception as e:
-        print(f"❌ Unexpected error in predicted moisture: {str(e)}")
+        print(f"\u274c Unexpected error in predicted moisture: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
