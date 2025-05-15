@@ -7,6 +7,8 @@ import pandas as pd
 import joblib
 import xgboost as xgb
 import os
+import sqlite3
+
 
 from models import MoistureLog, IrrigationLog
 from database import Base, engine, SessionLocal
