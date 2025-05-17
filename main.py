@@ -7,6 +7,7 @@ import pandas as pd
 import joblib
 import xgboost as xgb
 import os
+from .models import MoistureLog, IrrigationLog, WeatherHistory, PredictionMeta
 
 
 from models import MoistureLog, IrrigationLog
