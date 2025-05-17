@@ -80,6 +80,10 @@ def log_irrigation(request: Request, timestamp: str = Body(...), irrigation_mm: 
     db.close()
     return {"status": "irrigation logged"}
 
+@app.get("/predicted-moisture")
+def predicted_moisture():
+    return get_predicted_moisture()
+    
 def get_predicted_moisture():
     print("[INFO] Running /predicted-moisture")
     try:
