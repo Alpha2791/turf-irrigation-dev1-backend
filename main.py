@@ -197,7 +197,7 @@ def get_predicted_moisture():
             else:
                 model_pred = model.predict(features)[0]
                 basic_estimate = last_pred - et_mm + rainfall_mm + irrigation_mm
-                alpha = min(sample_count / 100, 1.0)
+                alpha = min(sample_count / 100, 0.8)
                 predicted_moisture = (alpha * model_pred) + ((1 - alpha) * basic_estimate)
 
             predicted_moisture = max(min(predicted_moisture, 100), 0)
