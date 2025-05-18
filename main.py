@@ -94,18 +94,19 @@ def get_predicted_moisture():
 
         db = SessionLocal()
 
-        # Determine time range
-        # Determine time range
+        # Determine last logged soil moisture timestamp
+        last_moist = db.query(MoistureLog).order_by(MoistureLog.timestamp.desc()).first()
         now = datetime.utcnow()
-        last_ts = get_last_weather_timestamp(db)
-        if last_ts is None:
-            start_dt = now - timedelta(days=8)  # initial backfill window
+
+        if last_moist:
+            start_dt = last_moist.timestamp
         else:
-            start_dt = last_ts + timedelta(hours=1)  # fetch only what's missing
+            start_dt = now - timedelta(days=8)  # default if no data
 
-        end_dt = now
+        # Forecast to 5 days ahead
+        end_dt = now + timedelta(days=5)
 
-        # 🔒 Defensive fix: make sure start_dt isn't after end_dt
+        # Defensive check
         if start_dt > end_dt:
             print("[WARNING] start_dt is after end_dt, adjusting to fetch past 2 days")
             start_dt = end_dt - timedelta(days=2)
@@ -114,7 +115,6 @@ def get_predicted_moisture():
         end_date = end_dt.strftime("%Y-%m-%d")
 
         print(f"📥 Fetching weather from {start_date} to {end_date}")
-
 
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{LATITUDE},{LONGITUDE}/{start_date}/{end_date}?unitGroup=metric&key={VC_API_KEY}&include=hours&elements=datetime,temp,humidity,windspeed,solarradiation,precip"
         response = requests.get(url)
@@ -129,14 +129,12 @@ def get_predicted_moisture():
                 solar_radiation = hour.get("solarradiation", 0) or 0
                 et = round(0.408 * solar_radiation / 1000, 3)
 
-                # Add to DataFrame base
                 weather_data.append({
                     "timestamp": raw_ts,
                     "ET_mm_hour": et,
                     "rainfall_mm": hour.get("precip", 0) or 0
                 })
 
-                # Save to DB
                 timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
                 weather_entry = WeatherHistory(
                     timestamp=timestamp,
@@ -150,17 +148,14 @@ def get_predicted_moisture():
                 db.merge(weather_entry)
                 new_ts = timestamp
 
-        # ✅ Save latest timestamp
         if new_ts:
             set_last_weather_timestamp(db, new_ts)
 
-        # Convert to DataFrame
         df_weather = pd.DataFrame(weather_data)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"], format="%Y-%m-%dT%H:%M", errors="coerce")
         df_weather.dropna(subset=["timestamp"], inplace=True)
         df_weather.set_index("timestamp", inplace=True)
 
-        # Pull moisture & irrigation logs
         moist_entries = db.query(MoistureLog).all()
         irrig_entries = db.query(IrrigationLog).all()
 
@@ -174,7 +169,6 @@ def get_predicted_moisture():
 
         db.close()
 
-        # Merge dataframes
         df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
         df = df.sort_index()
         print("[INFO] Forecast dataframe shape:", df.shape)
