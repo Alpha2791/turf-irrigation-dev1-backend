@@ -94,19 +94,15 @@ def get_predicted_moisture():
 
         db = SessionLocal()
 
-        # Determine last logged soil moisture timestamp
-        last_moist = db.query(MoistureLog).order_by(MoistureLog.timestamp.desc()).first()
+        # Determine time range
         now = datetime.utcnow()
+        last_ts = get_last_weather_timestamp(db)
 
-        if last_moist:
-            start_dt = last_moist.timestamp
-        else:
-            start_dt = now - timedelta(days=8)  # default if no data
-
-        # Forecast to 5 days ahead
+        # 3 days history + 5 days forecast
+        start_dt = now - timedelta(days=3)
         end_dt = now + timedelta(days=5)
 
-        # Defensive check
+        # 🔒 Defensive fix
         if start_dt > end_dt:
             print("[WARNING] start_dt is after end_dt, adjusting to fetch past 2 days")
             start_dt = end_dt - timedelta(days=2)
@@ -176,6 +172,7 @@ def get_predicted_moisture():
         results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
         sample_count = len(df_moist)
+        latest_log_ts = df_moist.index[-1] if not df_moist.empty else None
 
         print("[INFO] Starting moisture prediction loop")
         for ts, row in df.iterrows():
@@ -192,7 +189,9 @@ def get_predicted_moisture():
                 "dayofyear": dayofyear
             }])
 
-            if sample_count < 10:
+            hours_since_last_log = (ts - latest_log_ts).total_seconds() / 3600 if latest_log_ts else float("inf")
+
+            if sample_count < 10 or hours_since_last_log > 48:
                 predicted_moisture = last_pred - et_mm + rainfall_mm + irrigation_mm
             else:
                 model_pred = model.predict(features)[0]
@@ -218,6 +217,7 @@ def get_predicted_moisture():
     except Exception as e:
         print(f"[ERROR] Unexpected error in predicted moisture: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
 
 @app.get("/wilt-forecast")
 def get_wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
