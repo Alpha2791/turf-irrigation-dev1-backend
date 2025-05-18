@@ -95,6 +95,7 @@ def get_predicted_moisture():
         db = SessionLocal()
 
         # Determine time range
+        # Determine time range
         now = datetime.utcnow()
         last_ts = get_last_weather_timestamp(db)
         if last_ts is None:
@@ -103,10 +104,17 @@ def get_predicted_moisture():
             start_dt = last_ts + timedelta(hours=1)  # fetch only what's missing
 
         end_dt = now
+
+        # 🔒 Defensive fix: make sure start_dt isn't after end_dt
+        if start_dt > end_dt:
+            print("[WARNING] start_dt is after end_dt, adjusting to fetch past 2 days")
+            start_dt = end_dt - timedelta(days=2)
+
         start_date = start_dt.strftime("%Y-%m-%d")
         end_date = end_dt.strftime("%Y-%m-%d")
 
         print(f"📥 Fetching weather from {start_date} to {end_date}")
+
 
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{LATITUDE},{LONGITUDE}/{start_date}/{end_date}?unitGroup=metric&key={VC_API_KEY}&include=hours&elements=datetime,temp,humidity,windspeed,solarradiation,precip"
         response = requests.get(url)
