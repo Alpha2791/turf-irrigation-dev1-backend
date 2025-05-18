@@ -224,9 +224,12 @@ def get_wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
     predictions = get_predicted_moisture()
 
     for row in predictions:
-        moisture = row["predicted_moisture_mm"]
+        moisture = row.get("predicted_moisture_mm")
+        if moisture is None:
+            continue  # skip any row missing the moisture value
+
         if moisture < wilt_point:
-            ts = row["timestamp"]
+            ts = row.get("timestamp", "unknown time")
             rec_irrig = upper_limit - moisture
             return {
                 "wilt_point_hit": ts,
@@ -235,4 +238,9 @@ def get_wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
                 "message": f"Apply approx {round(rec_irrig, 1)} mm to reach {upper_limit}%"
             }
 
-    return {"message": "No wilt point drop expected in forecast."}
+    return {
+        "wilt_point_hit": None,
+        "recommended_irrigation_mm": None,
+        "upper_limit": upper_limit,
+        "message": "No wilt point drop expected in forecast."
+    }
