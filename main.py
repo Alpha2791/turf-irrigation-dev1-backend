@@ -91,25 +91,30 @@ def get_predicted_moisture():
             return []
 
         model = joblib.load(MODEL_FILE)
+
         db = SessionLocal()
 
-        # Determine time range
         now = datetime.utcnow()
-        latest_log_entry = db.query(MoistureLog).order_by(MoistureLog.timestamp.desc()).first()
-        if latest_log_entry:
-            start_dt = latest_log_entry.timestamp
-        else:
-            start_dt = now - timedelta(days=3)
 
-        end_dt = now + timedelta(days=5)
+        moist_entries = db.query(MoistureLog).all()
+        irrig_entries = db.query(IrrigationLog).all()
 
-        # Defensive fix
-        if start_dt > end_dt:
-            print("[WARNING] start_dt is after end_dt, adjusting to fetch past 2 days")
-            start_dt = end_dt - timedelta(days=2)
+        df_moist = pd.DataFrame([
+            {"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moist_entries
+        ]).set_index("timestamp") if moist_entries else pd.DataFrame(columns=["moisture_mm"])
 
-        start_date = start_dt.strftime("%Y-%m-%d")
-        end_date = end_dt.strftime("%Y-%m-%d")
+        df_irrig = pd.DataFrame([
+            {"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrig_entries
+        ]).set_index("timestamp") if irrig_entries else pd.DataFrame(columns=["irrigation_mm"])
+
+        latest_log_ts = df_moist.index[-1] if not df_moist.empty else now
+
+        # Force 3 days of history before the latest soil moisture log
+        history_start = latest_log_ts - timedelta(days=3)
+        forecast_end = now + timedelta(days=5)
+
+        start_date = history_start.strftime("%Y-%m-%d")
+        end_date = forecast_end.strftime("%Y-%m-%d")
 
         print(f"📥 Fetching weather from {start_date} to {end_date}")
 
@@ -133,8 +138,7 @@ def get_predicted_moisture():
                 })
 
                 timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
-                existing = db.query(WeatherHistory).get(timestamp)
-                if not existing:
+                try:
                     weather_entry = WeatherHistory(
                         timestamp=timestamp,
                         et_mm_hour=et,
@@ -146,27 +150,18 @@ def get_predicted_moisture():
                     )
                     db.add(weather_entry)
                     new_ts = timestamp
+                except Exception:
+                    db.rollback()
 
         if new_ts:
             set_last_weather_timestamp(db, new_ts)
+
+        db.close()
 
         df_weather = pd.DataFrame(weather_data)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"], format="%Y-%m-%dT%H:%M", errors="coerce")
         df_weather.dropna(subset=["timestamp"], inplace=True)
         df_weather.set_index("timestamp", inplace=True)
-
-        moist_entries = db.query(MoistureLog).all()
-        irrig_entries = db.query(IrrigationLog).all()
-
-        df_moist = pd.DataFrame([
-            {"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moist_entries
-        ]).set_index("timestamp") if moist_entries else pd.DataFrame(columns=["moisture_mm"])
-
-        df_irrig = pd.DataFrame([
-            {"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrig_entries
-        ]).set_index("timestamp") if irrig_entries else pd.DataFrame(columns=["irrigation_mm"])
-
-        db.close()
 
         df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
         df = df.sort_index()
@@ -175,7 +170,6 @@ def get_predicted_moisture():
         results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
         sample_count = len(df_moist)
-        latest_log_ts = df_moist.index[-1] if not df_moist.empty else None
 
         print("[INFO] Starting moisture prediction loop")
         for ts, row in df.iterrows():
@@ -213,11 +207,6 @@ def get_predicted_moisture():
             })
 
             last_pred = predicted_moisture
-
-        # Trim results to last 3 days + next 5 days
-        final_start = now - timedelta(days=3)
-        final_end = now + timedelta(days=5)
-        results = [r for r in results if final_start.strftime("%Y-%m-%dT%H") <= r["timestamp"] <= final_end.strftime("%Y-%m-%dT%H")]
 
         print(f"[INFO] Returning {len(results)} predicted moisture points")
         return results
