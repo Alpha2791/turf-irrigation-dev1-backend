@@ -91,18 +91,19 @@ def get_predicted_moisture():
             return []
 
         model = joblib.load(MODEL_FILE)
-
         db = SessionLocal()
 
         # Determine time range
         now = datetime.utcnow()
-        last_ts = get_last_weather_timestamp(db)
+        latest_log_entry = db.query(MoistureLog).order_by(MoistureLog.timestamp.desc()).first()
+        if latest_log_entry:
+            start_dt = latest_log_entry.timestamp
+        else:
+            start_dt = now - timedelta(days=3)
 
-        # 3 days history + 5 days forecast
-        start_dt = now - timedelta(days=3)
         end_dt = now + timedelta(days=5)
 
-        # 🔒 Defensive fix
+        # Defensive fix
         if start_dt > end_dt:
             print("[WARNING] start_dt is after end_dt, adjusting to fetch past 2 days")
             start_dt = end_dt - timedelta(days=2)
@@ -132,17 +133,19 @@ def get_predicted_moisture():
                 })
 
                 timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
-                weather_entry = WeatherHistory(
-                    timestamp=timestamp,
-                    et_mm_hour=et,
-                    rainfall_mm=hour.get("precip", 0) or 0,
-                    solar_radiation=solar_radiation,
-                    temp_c=hour.get("temp", 0),
-                    humidity=hour.get("humidity", 0),
-                    windspeed=hour.get("windspeed", 0),
-                )
-                db.merge(weather_entry)
-                new_ts = timestamp
+                existing = db.query(WeatherHistory).get(timestamp)
+                if not existing:
+                    weather_entry = WeatherHistory(
+                        timestamp=timestamp,
+                        et_mm_hour=et,
+                        rainfall_mm=hour.get("precip", 0) or 0,
+                        solar_radiation=solar_radiation,
+                        temp_c=hour.get("temp", 0),
+                        humidity=hour.get("humidity", 0),
+                        windspeed=hour.get("windspeed", 0),
+                    )
+                    db.add(weather_entry)
+                    new_ts = timestamp
 
         if new_ts:
             set_last_weather_timestamp(db, new_ts)
@@ -210,6 +213,11 @@ def get_predicted_moisture():
             })
 
             last_pred = predicted_moisture
+
+        # Trim results to last 3 days + next 5 days
+        final_start = now - timedelta(days=3)
+        final_end = now + timedelta(days=5)
+        results = [r for r in results if final_start.strftime("%Y-%m-%dT%H") <= r["timestamp"] <= final_end.strftime("%Y-%m-%dT%H")]
 
         print(f"[INFO] Returning {len(results)} predicted moisture points")
         return results
