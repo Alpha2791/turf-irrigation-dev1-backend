@@ -93,6 +93,7 @@ def get_predicted_moisture():
         model = joblib.load(MODEL_FILE)
 
         db = SessionLocal()
+
         now = datetime.utcnow()
 
         moist_entries = db.query(MoistureLog).all()
@@ -115,7 +116,7 @@ def get_predicted_moisture():
         start_date = history_start.strftime("%Y-%m-%d")
         end_date = forecast_end.strftime("%Y-%m-%d")
 
-        print(f"📥 Fetching weather from {start_date} to {end_date}")
+        print(f"📅 Fetching weather from {start_date} to {end_date}")
 
         url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{LATITUDE},{LONGITUDE}/{start_date}/{end_date}?unitGroup=metric&key={VC_API_KEY}&include=hours&elements=datetime,temp,humidity,windspeed,solarradiation,precip"
         response = requests.get(url)
@@ -138,6 +139,7 @@ def get_predicted_moisture():
                         "rainfall_mm": hour.get("precip", 0) or 0
                     })
 
+                    # Skip if timestamp already exists in DB
                     existing = db.query(WeatherHistory).filter_by(timestamp=timestamp).first()
                     if existing:
                         continue
@@ -164,44 +166,34 @@ def get_predicted_moisture():
         except Exception as outer_e:
             print(f"[ERROR] Outer exception during weather import: {outer_e}")
 
-        finally:
-            db.close()
-
         df_weather = pd.DataFrame(weather_data)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"], format="%Y-%m-%dT%H:%M", errors="coerce")
         df_weather.dropna(subset=["timestamp"], inplace=True)
         df_weather.set_index("timestamp", inplace=True)
 
-        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
-
-        # Inject actual latest moisture reading as anchor
+        # Insert actual soil moisture reading into the df
         if not df_moist.empty:
-            latest_log_ts = df_moist.index[-1]
-            last_pred = df_moist.loc[latest_log_ts]["moisture_mm"]
+            actual_point = df_moist.iloc[-1]
+            actual_ts = df_moist.index[-1]
+            df_weather.loc[actual_ts] = df_weather.loc[actual_ts] if actual_ts in df_weather.index else {}
+            df_weather.loc[actual_ts, "force_moisture_mm"] = actual_point["moisture_mm"]
 
-            if latest_log_ts not in df.index:
-                df.loc[latest_log_ts] = {
-                    "ET_mm_hour": 0,
-                    "rainfall_mm": 0,
-                    "irrigation_mm": 0
-                }
-
-        else:
-            latest_log_ts = now
-            last_pred = 25.0
-
+        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
         df = df.sort_index()
-        sample_count = len(df_moist)
-
         print("[INFO] Forecast dataframe shape:", df.shape)
 
         results = []
+        last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
+        sample_count = len(df_moist)
 
         print("[INFO] Starting moisture prediction loop")
         for ts, row in df.iterrows():
+            if "force_moisture_mm" in row:
+                last_pred = row["force_moisture_mm"]
+
             hour = ts.hour
             dayofyear = ts.dayofyear
-            irrigation_mm = row["irrigation_mm"]
+            irrigation_mm = row.get("irrigation_mm", 0)
             rainfall_mm = row.get("rainfall_mm", 0)
             et_mm = row.get("ET_mm_hour", 0)
 
