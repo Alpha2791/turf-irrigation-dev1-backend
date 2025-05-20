@@ -91,9 +91,7 @@ def get_predicted_moisture():
             return []
 
         model = joblib.load(MODEL_FILE)
-
         db = SessionLocal()
-
         now = datetime.utcnow()
 
         moist_entries = db.query(MoistureLog).all()
@@ -125,49 +123,49 @@ def get_predicted_moisture():
         weather_data = []
         new_ts = None
 
-try:
-    for day in data.get("days", []):
-        for hour in day.get("hours", []):
-            raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
-            timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
-            solar_radiation = hour.get("solarradiation", 0) or 0
-            et = round(0.408 * solar_radiation / 1000, 3)
+        try:
+            for day in data.get("days", []):
+                for hour in day.get("hours", []):
+                    raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
+                    timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
+                    solar_radiation = hour.get("solarradiation", 0) or 0
+                    et = round(0.408 * solar_radiation / 1000, 3)
 
-            weather_data.append({
-                "timestamp": raw_ts,
-                "ET_mm_hour": et,
-                "rainfall_mm": hour.get("precip", 0) or 0
-            })
+                    weather_data.append({
+                        "timestamp": raw_ts,
+                        "ET_mm_hour": et,
+                        "rainfall_mm": hour.get("precip", 0) or 0
+                    })
 
-            # Skip if timestamp already exists in DB
-            existing = db.query(WeatherHistory).filter_by(timestamp=timestamp).first()
-            if existing:
-                continue
+                    # Skip if timestamp already exists in DB
+                    existing = db.query(WeatherHistory).filter_by(timestamp=timestamp).first()
+                    if existing:
+                        continue
 
-            try:
-                weather_entry = WeatherHistory(
-                    timestamp=timestamp,
-                    et_mm_hour=et,
-                    rainfall_mm=hour.get("precip", 0) or 0,
-                    solar_radiation=solar_radiation,
-                    temp_c=hour.get("temp", 0),
-                    humidity=hour.get("humidity", 0),
-                    windspeed=hour.get("windspeed", 0),
-                )
-                db.add(weather_entry)
-                new_ts = timestamp
-            except Exception as e:
-                db.rollback()
-                print(f"[SKIP] Failed to add entry for {timestamp}: {e}")
+                    try:
+                        weather_entry = WeatherHistory(
+                            timestamp=timestamp,
+                            et_mm_hour=et,
+                            rainfall_mm=hour.get("precip", 0) or 0,
+                            solar_radiation=solar_radiation,
+                            temp_c=hour.get("temp", 0),
+                            humidity=hour.get("humidity", 0),
+                            windspeed=hour.get("windspeed", 0),
+                        )
+                        db.add(weather_entry)
+                        new_ts = timestamp
+                    except Exception as e:
+                        db.rollback()
+                        print(f"[SKIP] Failed to add entry for {timestamp}: {e}")
 
-    if new_ts:
-        set_last_weather_timestamp(db, new_ts)
+            if new_ts:
+                set_last_weather_timestamp(db, new_ts)
 
-except Exception as outer_e:
-    print(f"[ERROR] Outer exception during weather import: {outer_e}")
+        except Exception as outer_e:
+            print(f"[ERROR] Outer exception during weather import: {outer_e}")
 
-finally:
-    db.close()
+        finally:
+            db.close()
 
         df_weather = pd.DataFrame(weather_data)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"], format="%Y-%m-%dT%H:%M", errors="coerce")
@@ -225,7 +223,6 @@ finally:
     except Exception as e:
         print(f"[ERROR] Unexpected error in predicted moisture: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-
 
 @app.get("/wilt-forecast")
 def get_wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
