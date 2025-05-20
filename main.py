@@ -91,6 +91,7 @@ def get_predicted_moisture():
             return []
 
         model = joblib.load(MODEL_FILE)
+
         db = SessionLocal()
         now = datetime.utcnow()
 
@@ -137,7 +138,6 @@ def get_predicted_moisture():
                         "rainfall_mm": hour.get("precip", 0) or 0
                     })
 
-                    # Skip if timestamp already exists in DB
                     existing = db.query(WeatherHistory).filter_by(timestamp=timestamp).first()
                     if existing:
                         continue
@@ -173,12 +173,29 @@ def get_predicted_moisture():
         df_weather.set_index("timestamp", inplace=True)
 
         df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
+
+        # Inject actual latest moisture reading as anchor
+        if not df_moist.empty:
+            latest_log_ts = df_moist.index[-1]
+            last_pred = df_moist.loc[latest_log_ts]["moisture_mm"]
+
+            if latest_log_ts not in df.index:
+                df.loc[latest_log_ts] = {
+                    "ET_mm_hour": 0,
+                    "rainfall_mm": 0,
+                    "irrigation_mm": 0
+                }
+
+        else:
+            latest_log_ts = now
+            last_pred = 25.0
+
         df = df.sort_index()
+        sample_count = len(df_moist)
+
         print("[INFO] Forecast dataframe shape:", df.shape)
 
         results = []
-        last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
-        sample_count = len(df_moist)
 
         print("[INFO] Starting moisture prediction loop")
         for ts, row in df.iterrows():
