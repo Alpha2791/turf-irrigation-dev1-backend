@@ -216,6 +216,15 @@ def get_predicted_moisture():
 
             predicted_moisture = max(min(predicted_moisture, 100), 0)
 
+        import math
+        if not math.isfinite(et_mm):
+            et_mm = 0.0
+        if not math.isfinite(rainfall_mm):
+            rainfall_mm = 0.0
+        if not math.isfinite(irrigation_mm):
+            irrigation_mm = 0.0
+        if not math.isfinite(predicted_moisture):
+            predicted_moisture = 0.0
             results.append({
                 "timestamp": ts.strftime("%Y-%m-%dT%H"),
                 "ET_mm_hour": et_mm,
