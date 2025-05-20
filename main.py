@@ -156,15 +156,18 @@ try:
                 )
                 db.add(weather_entry)
                 new_ts = timestamp
-            except Exception:
+            except Exception as e:
                 db.rollback()
+                print(f"[SKIP] Failed to add entry for {timestamp}: {e}")
 
     if new_ts:
         set_last_weather_timestamp(db, new_ts)
 
+except Exception as outer_e:
+    print(f"[ERROR] Outer exception during weather import: {outer_e}")
+
 finally:
     db.close()
-
 
         df_weather = pd.DataFrame(weather_data)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"], format="%Y-%m-%dT%H:%M", errors="coerce")
