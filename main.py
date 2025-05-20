@@ -125,31 +125,35 @@ def get_predicted_moisture():
         weather_data = []
         new_ts = None
 
-        for day in data.get("days", []):
-            for hour in day.get("hours", []):
-                raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
-                solar_radiation = hour.get("solarradiation", 0) or 0
-                et = round(0.408 * solar_radiation / 1000, 3)
+for day in data.get("days", []):
+    for hour in day.get("hours", []):
+        raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
+        timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
+        solar_radiation = hour.get("solarradiation", 0) or 0
+        et = round(0.408 * solar_radiation / 1000, 3)
 
-                weather_data.append({
-                    "timestamp": raw_ts,
-                    "ET_mm_hour": et,
-                    "rainfall_mm": hour.get("precip", 0) or 0
-                })
+        weather_data.append({
+            "timestamp": raw_ts,
+            "ET_mm_hour": et,
+            "rainfall_mm": hour.get("precip", 0) or 0
+        })
 
-                timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
-                try:
-                    weather_entry = WeatherHistory(
-                        timestamp=timestamp,
-                        et_mm_hour=et,
-                        rainfall_mm=hour.get("precip", 0) or 0,
-                        solar_radiation=solar_radiation,
-                        temp_c=hour.get("temp", 0),
-                        humidity=hour.get("humidity", 0),
-                        windspeed=hour.get("windspeed", 0),
-                    )
-                    db.add(weather_entry)
-                    new_ts = timestamp
+        # Skip if timestamp already exists in DB
+        existing = db.query(WeatherHistory).filter_by(timestamp=timestamp).first()
+        if existing:
+            continue
+
+        weather_entry = WeatherHistory(
+            timestamp=timestamp,
+            et_mm_hour=et,
+            rainfall_mm=hour.get("precip", 0) or 0,
+            solar_radiation=solar_radiation,
+            temp_c=hour.get("temp", 0),
+            humidity=hour.get("humidity", 0),
+            windspeed=hour.get("windspeed", 0),
+        )
+        db.add(weather_entry)
+        new_ts = timestamp
                 except Exception:
                     db.rollback()
 
