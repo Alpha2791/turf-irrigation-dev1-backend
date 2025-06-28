@@ -27,7 +27,7 @@ MODEL_FILE = "moisture_model.pkl"
 LATITUDE = 52.281624
 LONGITUDE = -0.943448
 ELEVATION = 95
-VC_API_KEY = "2ELL5E9A47JT5XB74WGXS7PFV"
+VC_API_KEY = "2ELL5E9A47JT5XB74WGXS7PF"
 
 @app.on_event("startup")
 def startup():
@@ -83,7 +83,7 @@ def log_irrigation(request: Request, timestamp: str = Body(...), irrigation_mm: 
 @app.get("/predicted-moisture")
 def predicted_moisture():
     return get_predicted_moisture()
-    
+
 def get_predicted_moisture():
     print("[INFO] Running /predicted-moisture")
     try:
@@ -104,6 +104,10 @@ def get_predicted_moisture():
         df_irrig = pd.DataFrame([
             {"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrig_entries
         ]).set_index("timestamp") if irrig_entries else pd.DataFrame(columns=["irrigation_mm"])
+
+        # Remove timezone info for compatibility
+        df_moist.index = df_moist.index.tz_localize(None)
+        df_irrig.index = df_irrig.index.tz_localize(None)
 
         latest_log_ts = df_moist.index[-1] if not df_moist.empty else now
         weather_start = latest_log_ts
@@ -165,6 +169,9 @@ def get_predicted_moisture():
         df_weather.dropna(subset=["timestamp"], inplace=True)
         df_weather.set_index("timestamp", inplace=True)
 
+        df_irrig.index = df_irrig.index.tz_localize(None)
+        df_weather.index = df_weather.index.tz_localize(None)
+
         df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
         df = df.sort_index()
 
@@ -191,12 +198,12 @@ def get_predicted_moisture():
 
             hours_since_last_log = (ts - latest_log_ts).total_seconds() / 3600 if latest_log_ts else float("inf")
 
-            if sample_count < 15 or hours_since_last_log > 48:
+            if sample_count < 365 or hours_since_last_log > 48:
                 predicted_moisture = last_pred - et_mm + rainfall_mm + irrigation_mm
             else:
                 model_pred = model.predict(features)[0]
                 basic_estimate = last_pred - et_mm + rainfall_mm + irrigation_mm
-                alpha = min(sample_count / 100, 0.8)
+                alpha = min((sample_count - 365) / 100, 0.8)
                 predicted_moisture = (alpha * model_pred) + ((1 - alpha) * basic_estimate)
 
             predicted_moisture = max(min(float(predicted_moisture), 100), 0)
@@ -217,7 +224,6 @@ def get_predicted_moisture():
         print(f"[ERROR] Unexpected error in predicted moisture: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
-
 @app.get("/wilt-forecast")
 def get_wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
     predictions = get_predicted_moisture()
@@ -225,7 +231,7 @@ def get_wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
     for row in predictions:
         moisture = row.get("predicted_moisture_mm")
         if moisture is None:
-            continue  # skip any row missing the moisture value
+            continue
 
         if moisture < wilt_point:
             ts = row.get("timestamp", "unknown time")
