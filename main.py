@@ -1,12 +1,9 @@
-# final version of main.py for Turf Tracker Soil Moisture Tool with LSTM readiness
-
-from fastapi import FastAPI, Body, HTTPException, Request
+from fastapi import FastAPI, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
-import joblib
+import numpy as np
 import os
 from models import MoistureLog, IrrigationLog, WeatherHistory, PredictionMeta
 from database import Base, engine, SessionLocal
@@ -21,9 +18,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL_FILE = "moisture_model.pkl"
 LATITUDE = 52.281624
 LONGITUDE = -0.943448
+ELEVATION = 95
 VC_API_KEY = "2ELL5E9A47JT5XB74WGXS7PFV"
 ML_THRESHOLD = 365
 
@@ -76,6 +73,17 @@ def log_irrigation(timestamp: str = Body(...), irrigation_mm: float = Body(...))
     db.close()
     return {"status": "irrigation logged"}
 
+def calculate_et_fao56(solar, temp, humidity, wind):
+    Rn = 0.408 * solar
+    T = temp
+    u2 = wind
+    es = 0.6108 * np.exp((17.27 * T) / (T + 237.3))
+    ea = es * (humidity / 100)
+    delta = 4098 * es / ((T + 237.3) ** 2)
+    P = 101.3 * (((293 - 0.0065 * ELEVATION) / 293) ** 5.26)
+    gamma = 0.000665 * P
+    return ((0.408 * delta * Rn) + (gamma * 900 / (T + 273) * u2 * (es - ea))) / (delta + gamma * (1 + 0.34 * u2))
+
 @app.get("/predicted-moisture")
 def predicted_moisture():
     try:
@@ -90,13 +98,11 @@ def predicted_moisture():
         if df_moist.empty:
             return []
 
-        df_moist["timestamp"] = pd.to_datetime(df_moist["timestamp"])
+        df_moist["timestamp"] = pd.to_datetime(df_moist["timestamp"]).dt.tz_localize(None)
         df_moist.set_index("timestamp", inplace=True)
-        df_moist.index = df_moist.index.tz_localize(None)
 
-        df_irrig["timestamp"] = pd.to_datetime(df_irrig["timestamp"])
+        df_irrig["timestamp"] = pd.to_datetime(df_irrig["timestamp"]).dt.tz_localize(None)
         df_irrig.set_index("timestamp", inplace=True)
-        df_irrig.index = df_irrig.index.tz_localize(None)
 
         latest_log_ts = df_moist.index[-1]
         now = datetime.utcnow()
@@ -118,10 +124,10 @@ def predicted_moisture():
                 raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
                 timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
                 solar = hour.get("solarradiation", 0) or 0
-                et = round(0.408 * solar / 1000, 3)
+                et = calculate_et_fao56(solar, hour.get("temp", 0), hour.get("humidity", 0), hour.get("windspeed", 0))
                 df_weather.append({
                     "timestamp": timestamp,
-                    "ET_mm_hour": et,
+                    "ET_mm_hour": round(et, 3),
                     "rainfall_mm": hour.get("precip", 0),
                     "temp": hour.get("temp", 0),
                     "humidity": hour.get("humidity", 0),
@@ -142,11 +148,7 @@ def predicted_moisture():
             rain = row["rainfall_mm"]
             irr = row["irrigation_mm"]
 
-            if sample_count < ML_THRESHOLD:
-                predicted = last_pred - et + rain + irr
-            else:
-                # Reserved for future LSTM call
-                predicted = last_pred - et + rain + irr  # temp fallback
+            predicted = last_pred - et + rain + irr  # Pure physics for now
 
             predicted = max(min(float(predicted), 100), 0)
             last_pred = predicted
