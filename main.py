@@ -129,36 +129,34 @@ def predicted_moisture():
                     "timestamp": timestamp,
                     "ET_mm_hour": round(et, 3),
                     "rainfall_mm": hour.get("precip", 0),
-                    "temp": hour.get("temp", 0),
-                    "humidity": hour.get("humidity", 0),
-                    "windspeed": hour.get("windspeed", 0)
                 })
 
-        df_weather = pd.DataFrame(df_weather).set_index("timestamp")
-        df_weather.index = df_weather.index.tz_localize(None)
+        df_weather = pd.DataFrame(df_weather)
+        df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"]).dt.tz_localize(None)
+        df_weather.set_index("timestamp", inplace=True)
 
-        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0}).sort_index()
+        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
+        df = df[df.index > latest_log_ts]  # only future predictions
+        df = df.sort_index()
 
-        sample_count = len(df_moist)
+        results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"]
-        results = []#
 
+        # Inject real logged value as starting point
         results.append({
-            "timestamp": df_moist.index[-1].strftime("%Y-%m-%dT%H"),
+            "timestamp": latest_log_ts.strftime("%Y-%m-%dT%H"),
             "ET_mm_hour": 0,
             "rainfall_mm": 0,
             "irrigation_mm": 0,
             "predicted_moisture_mm": round(last_pred, 1)
         })
 
-
         for ts, row in df.iterrows():
             et = row["ET_mm_hour"]
             rain = row["rainfall_mm"]
             irr = row["irrigation_mm"]
 
-            predicted = last_pred - et + rain + irr  # Pure physics for now
-
+            predicted = last_pred - et + rain + irr
             predicted = max(min(float(predicted), 100), 0)
             last_pred = predicted
 
@@ -174,6 +172,7 @@ def predicted_moisture():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
 
 @app.get("/wilt-forecast")
 def wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
