@@ -141,7 +141,16 @@ def predicted_moisture():
 
         sample_count = len(df_moist)
         last_pred = df_moist.iloc[-1]["moisture_mm"]
-        results = []
+        results = []#
+
+        results.append({
+            "timestamp": df_moist.index[-1].strftime("%Y-%m-%dT%H"),
+            "ET_mm_hour": 0,
+            "rainfall_mm": 0,
+            "irrigation_mm": 0,
+            "predicted_moisture_mm": round(last_pred, 1)
+        })
+
 
         for ts, row in df.iterrows():
             et = row["ET_mm_hour"]
