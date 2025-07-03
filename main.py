@@ -74,8 +74,19 @@ def log_irrigation(timestamp: str = Body(...), irrigation_mm: float = Body(...))
     return {"status": "irrigation logged"}
 
 def calculate_et_fao56(solar_w_m2, temp, humidity, wind):
-    # Convert to MJ/m²/hour
-    Rn = 0.408 * ((solar_w_m2 * 3600) / 1_000_000)
+    """
+    FAO-56 Penman-Monteith ET₀ hourly calculation, with correct unit conversions.
+    Inputs:
+        solar_w_m2 - Solar radiation in W/m² (from Visual Crossing)
+        temp - Air temperature (°C)
+        humidity - Relative humidity (%)
+        wind - Wind speed (m/s)
+    Returns:
+        ET₀ in mm/hour
+    """
+    # Convert solar from W/m² to MJ/m²/hour
+    solar_mj_m2_hr = (solar_w_m2 * 3600) / 1_000_000
+    Rn = 0.408 * solar_mj_m2_hr  # Net radiation (MJ/m²/hour)
 
     T = temp
     u2 = wind
@@ -85,7 +96,10 @@ def calculate_et_fao56(solar_w_m2, temp, humidity, wind):
     P = 101.3 * (((293 - 0.0065 * ELEVATION) / 293) ** 5.26)
     gamma = 0.000665 * P
 
-    return ((0.408 * delta * Rn) + (gamma * 900 / (T + 273) * u2 * (es - ea))) / (delta + gamma * (1 + 0.34 * u2))
+    eto = ((0.408 * delta * Rn) + (gamma * 900 / (T + 273) * u2 * (es - ea))) / (
+        delta + gamma * (1 + 0.34 * u2)
+    )
+    return max(0.0, eto)  # Ensure ET cannot be negative
 
 @app.get("/predicted-moisture")
 def predicted_moisture():
