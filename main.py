@@ -107,8 +107,8 @@ def predicted_moisture():
         db = SessionLocal()
 
         # Load moisture and irrigation logs
-        moisture_logs = pd.read_sql(db.query(MoistureLog).statement, db.connect(), parse_dates=["timestamp"])
-        irrigation_logs = pd.read_sql(db.query(IrrigationLog).statement, db.connect(), parse_dates=["timestamp"])
+        moisture_logs = pd.read_sql(db.query(MoistureLog).statement, db.bind, parse_dates=["timestamp"])
+        irrigation_logs = pd.read_sql(db.query(IrrigationLog).statement, db.bind, parse_dates=["timestamp"])
 
         if moisture_logs.empty:
             raise HTTPException(status_code=404, detail="No moisture data available")
@@ -130,7 +130,7 @@ def predicted_moisture():
               .filter(WeatherHistory.timestamp >= latest_log_ts)
               .filter(WeatherHistory.timestamp <= forecast_end)
               .statement,
-            db.connect(),
+            db.bind,
             parse_dates=["timestamp"]
         )
 
@@ -146,7 +146,7 @@ def predicted_moisture():
             "predicted_moisture_mm": float(round(last_pred, 1))
         }]
 
-        for i, row in forecast_df.iterrows():
+        for _, row in forecast_df.iterrows():
             t = row["timestamp"]
             et = float(row.get("ET_mm_hour", 0.0))
             rain = float(row.get("rainfall_mm", 0.0))
@@ -170,6 +170,7 @@ def predicted_moisture():
         print("[DEBUG] First 3 result rows:")
         print(results[:3])
 
+        db.close()
         return results
 
     except Exception as e:
