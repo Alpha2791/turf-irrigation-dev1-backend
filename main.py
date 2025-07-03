@@ -171,12 +171,13 @@ def predicted_moisture():
         print("[DEBUG] Forecast dataframe shape:", df.shape)
 
         results = [{
-            "timestamp": latest_log_ts.isoformat(),
+            "timestamp": (latest_log_ts - timedelta(seconds=1)).isoformat(),
             "ET_mm_hour": 0,
             "rainfall_mm": 0,
             "irrigation_mm": 0,
             "predicted_moisture_mm": round(last_pred, 1)
         }]
+
 
         for ts, row in df.iterrows():
             et = row["ET_mm_hour"]
