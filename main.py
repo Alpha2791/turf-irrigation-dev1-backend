@@ -103,106 +103,73 @@ def calculate_et_fao56(solar_w_m2, temp, humidity, wind):
 
 @app.get("/predicted-moisture")
 def predicted_moisture():
-    try:
-        db = SessionLocal()
-        moist_entries = db.query(MoistureLog).order_by(MoistureLog.timestamp.asc()).all()
-        irrig_entries = db.query(IrrigationLog).all()
-        db.close()
+    db = SessionLocal()
 
-        df_moist = pd.DataFrame([{"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moist_entries])
-        df_irrig = pd.DataFrame([{"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrig_entries])
+    # Load moisture and irrigation logs
+    moisture_logs = pd.read_sql(db.query(MoistureLog).statement, db.connect(), parse_dates=["timestamp"])
+    irrigation_logs = pd.read_sql(db.query(IrrigationLog).statement, db.connect(), parse_dates=["timestamp"])
 
-        if df_moist.empty:
-            print("[ERROR] No moisture log data found.")
-            return []
+    if moisture_logs.empty:
+        raise HTTPException(status_code=404, detail="No moisture data available")
 
-        df_moist["timestamp"] = pd.to_datetime(df_moist["timestamp"]).dt.tz_localize(None)
-        df_moist["moisture_mm"] = pd.to_numeric(df_moist["moisture_mm"], errors="coerce")
-        df_moist.dropna(subset=["moisture_mm"], inplace=True)
-        df_moist.set_index("timestamp", inplace=True)
+    # Sort and get last entry
+    moisture_logs.sort_values("timestamp", inplace=True)
+    latest_log = moisture_logs.iloc[-1]
+    latest_log_ts = latest_log["timestamp"]
+    last_pred = latest_log["moisture_mm"]
 
-        df_irrig["timestamp"] = pd.to_datetime(df_irrig["timestamp"]).dt.tz_localize(None)
-        df_irrig.set_index("timestamp", inplace=True)
+    print("[DEBUG] Last few moisture logs:\n", moisture_logs.tail())
+    print("[DEBUG] Starting moisture for forecast:", last_pred)
 
-        print("[DEBUG] Last few moisture logs:\n", df_moist.tail())
+    # Forecast period: next 5 days
+    now = datetime.now().replace(minute=0, second=0, microsecond=0)
+    forecast_end = now + timedelta(days=5)
+    forecast_df = pd.read_sql(
+        db.query(WeatherHistory)
+          .filter(WeatherHistory.timestamp >= latest_log_ts)
+          .filter(WeatherHistory.timestamp <= forecast_end)
+          .statement,
+        db.connect(),
+        parse_dates=["timestamp"]
+    )
 
-        latest_log_ts = df_moist.index[-1]
-        last_pred = df_moist.iloc[-1]["moisture_mm"]
+    forecast_df.sort_values("timestamp", inplace=True)
+    print("[DEBUG] Forecast dataframe shape:", forecast_df.shape)
 
-        print("[DEBUG] Starting moisture for forecast:", last_pred)
+    # Build hourly predictions
+    results = [{
+        "timestamp": (latest_log_ts - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+        "ET_mm_hour": 0.0,
+        "rainfall_mm": 0.0,
+        "irrigation_mm": 0.0,
+        "predicted_moisture_mm": float(round(last_pred, 1))
+    }]
 
-        if last_pred <= 0:
-            raise HTTPException(status_code=500, detail="Invalid starting moisture value (0 or less)")
+    for i, row in forecast_df.iterrows():
+        t = row["timestamp"]
+        et = float(row.get("ET_mm_hour", 0.0))
+        rain = float(row.get("rainfall_mm", 0.0))
 
-        now = datetime.utcnow()
-        forecast_end = now + timedelta(days=5)
+        irr = 0.0
+        if not irrigation_logs.empty:
+            irr_logs = irrigation_logs[irrigation_logs["timestamp"] == t]
+            if not irr_logs.empty:
+                irr = float(irr_logs["irrigation_mm"].sum())
 
-        url = (
-            f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/"
-            f"{LATITUDE},{LONGITUDE}/{latest_log_ts.date()}/{forecast_end.date()}"
-            f"?unitGroup=metric&key={VC_API_KEY}&include=hours"
-            f"&elements=datetime,temp,humidity,windspeed,solarradiation,precip"
-        )
+        last_pred = max(0, last_pred - et + rain + irr)
 
-        response = requests.get(url)
-        weather_data = response.json()
+        results.append({
+            "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S"),
+            "ET_mm_hour": et,
+            "rainfall_mm": rain,
+            "irrigation_mm": irr,
+            "predicted_moisture_mm": float(round(last_pred, 1))
+        })
 
-        df_weather = []
-        for day in weather_data.get("days", []):
-            for hour in day.get("hours", []):
-                raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
-                timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
-                solar = hour.get("solarradiation", 0) or 0
-                et = calculate_et_fao56(solar, hour.get("temp", 0), hour.get("humidity", 0), hour.get("windspeed", 0))
-                df_weather.append({
-                    "timestamp": timestamp,
-                    "ET_mm_hour": round(et, 3),
-                    "rainfall_mm": hour.get("precip", 0) or 0
-                })
+    print("[DEBUG] First 3 result rows:")
+    print(results[:3])
 
-        df_weather = pd.DataFrame(df_weather)
-        df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"]).dt.tz_localize(None)
-        df_weather.set_index("timestamp", inplace=True)
-
-        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0, "rainfall_mm": 0})
-        df = df[df.index >= latest_log_ts]
-        df = df.sort_index()
-
-        print("[DEBUG] Forecast dataframe shape:", df.shape)
-
-        results = [{
-            "timestamp": (latest_log_ts - timedelta(seconds=1)).isoformat(),
-            "ET_mm_hour": 0,
-            "rainfall_mm": 0,
-            "irrigation_mm": 0,
-            "predicted_moisture_mm": round(last_pred, 1)
-        }]
-
-
-        for ts, row in df.iterrows():
-            et = row["ET_mm_hour"]
-            rain = row["rainfall_mm"]
-            irr = row["irrigation_mm"]
-
-            predicted = last_pred - et + rain + irr
-            if not np.isfinite(predicted):
-                predicted = 0.0
-            predicted = max(min(float(predicted), 100), 0)
-            last_pred = predicted
-
-            results.append({
-                "timestamp": ts.isoformat(),
-                "ET_mm_hour": round(et, 3),
-                "rainfall_mm": round(rain, 2),
-                "irrigation_mm": round(irr, 2),
-                "predicted_moisture_mm": round(predicted, 1)
-            })
-
-        print("[DEBUG] First 3 result rows:")
-        for r in results[:3]:
-            print(r)
-
-        return results
+    return results
 
     except Exception as e:
         print(f"[ERROR] {str(e)}")
