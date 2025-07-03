@@ -103,79 +103,78 @@ def calculate_et_fao56(solar_w_m2, temp, humidity, wind):
 
 @app.get("/predicted-moisture")
 def predicted_moisture():
-    db = SessionLocal()
+    try:
+        db = SessionLocal()
 
-    # Load moisture and irrigation logs
-    moisture_logs = pd.read_sql(db.query(MoistureLog).statement, db.connect(), parse_dates=["timestamp"])
-    irrigation_logs = pd.read_sql(db.query(IrrigationLog).statement, db.connect(), parse_dates=["timestamp"])
+        # Load moisture and irrigation logs
+        moisture_logs = pd.read_sql(db.query(MoistureLog).statement, db.connect(), parse_dates=["timestamp"])
+        irrigation_logs = pd.read_sql(db.query(IrrigationLog).statement, db.connect(), parse_dates=["timestamp"])
 
-    if moisture_logs.empty:
-        raise HTTPException(status_code=404, detail="No moisture data available")
+        if moisture_logs.empty:
+            raise HTTPException(status_code=404, detail="No moisture data available")
 
-    # Sort and get last entry
-    moisture_logs.sort_values("timestamp", inplace=True)
-    latest_log = moisture_logs.iloc[-1]
-    latest_log_ts = latest_log["timestamp"]
-    last_pred = latest_log["moisture_mm"]
+        # Sort and get last entry
+        moisture_logs.sort_values("timestamp", inplace=True)
+        latest_log = moisture_logs.iloc[-1]
+        latest_log_ts = latest_log["timestamp"]
+        last_pred = latest_log["moisture_mm"]
 
-    print("[DEBUG] Last few moisture logs:\n", moisture_logs.tail())
-    print("[DEBUG] Starting moisture for forecast:", last_pred)
+        print("[DEBUG] Last few moisture logs:\n", moisture_logs.tail())
+        print("[DEBUG] Starting moisture for forecast:", last_pred)
 
-    # Forecast period: next 5 days
-    now = datetime.now().replace(minute=0, second=0, microsecond=0)
-    forecast_end = now + timedelta(days=5)
-    forecast_df = pd.read_sql(
-        db.query(WeatherHistory)
-          .filter(WeatherHistory.timestamp >= latest_log_ts)
-          .filter(WeatherHistory.timestamp <= forecast_end)
-          .statement,
-        db.connect(),
-        parse_dates=["timestamp"]
-    )
+        # Forecast period: next 5 days
+        now = datetime.now().replace(minute=0, second=0, microsecond=0)
+        forecast_end = now + timedelta(days=5)
+        forecast_df = pd.read_sql(
+            db.query(WeatherHistory)
+              .filter(WeatherHistory.timestamp >= latest_log_ts)
+              .filter(WeatherHistory.timestamp <= forecast_end)
+              .statement,
+            db.connect(),
+            parse_dates=["timestamp"]
+        )
 
-    forecast_df.sort_values("timestamp", inplace=True)
-    print("[DEBUG] Forecast dataframe shape:", forecast_df.shape)
+        forecast_df.sort_values("timestamp", inplace=True)
+        print("[DEBUG] Forecast dataframe shape:", forecast_df.shape)
 
-    # Build hourly predictions
-    results = [{
-        "timestamp": (latest_log_ts - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S"),
-        "ET_mm_hour": 0.0,
-        "rainfall_mm": 0.0,
-        "irrigation_mm": 0.0,
-        "predicted_moisture_mm": float(round(last_pred, 1))
-    }]
-
-    for i, row in forecast_df.iterrows():
-        t = row["timestamp"]
-        et = float(row.get("ET_mm_hour", 0.0))
-        rain = float(row.get("rainfall_mm", 0.0))
-
-        irr = 0.0
-        if not irrigation_logs.empty:
-            irr_logs = irrigation_logs[irrigation_logs["timestamp"] == t]
-            if not irr_logs.empty:
-                irr = float(irr_logs["irrigation_mm"].sum())
-
-        last_pred = max(0, last_pred - et + rain + irr)
-
-        results.append({
-            "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S"),
-            "ET_mm_hour": et,
-            "rainfall_mm": rain,
-            "irrigation_mm": irr,
+        # Build hourly predictions
+        results = [{
+            "timestamp": (latest_log_ts - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S"),
+            "ET_mm_hour": 0.0,
+            "rainfall_mm": 0.0,
+            "irrigation_mm": 0.0,
             "predicted_moisture_mm": float(round(last_pred, 1))
-        })
+        }]
 
-    print("[DEBUG] First 3 result rows:")
-    print(results[:3])
+        for i, row in forecast_df.iterrows():
+            t = row["timestamp"]
+            et = float(row.get("ET_mm_hour", 0.0))
+            rain = float(row.get("rainfall_mm", 0.0))
 
-    return results
+            irr = 0.0
+            if not irrigation_logs.empty:
+                irr_logs = irrigation_logs[irrigation_logs["timestamp"] == t]
+                if not irr_logs.empty:
+                    irr = float(irr_logs["irrigation_mm"].sum())
+
+            last_pred = max(0, last_pred - et + rain + irr)
+
+            results.append({
+                "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S"),
+                "ET_mm_hour": et,
+                "rainfall_mm": rain,
+                "irrigation_mm": irr,
+                "predicted_moisture_mm": float(round(last_pred, 1))
+            })
+
+        print("[DEBUG] First 3 result rows:")
+        print(results[:3])
+
+        return results
 
     except Exception as e:
         print(f"[ERROR] {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
-
 
 @app.get("/wilt-forecast")
 def wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
