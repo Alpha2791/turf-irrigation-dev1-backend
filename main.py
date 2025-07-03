@@ -73,8 +73,10 @@ def log_irrigation(timestamp: str = Body(...), irrigation_mm: float = Body(...))
     db.close()
     return {"status": "irrigation logged"}
 
-def calculate_et_fao56(solar, temp, humidity, wind):
-    Rn = 0.408 * solar
+def calculate_et_fao56(solar_w_m2, temp, humidity, wind):
+    # Convert to MJ/m²/hour
+    Rn = 0.408 * ((solar_w_m2 * 3600) / 1_000_000)
+
     T = temp
     u2 = wind
     es = 0.6108 * np.exp((17.27 * T) / (T + 237.3))
@@ -82,6 +84,7 @@ def calculate_et_fao56(solar, temp, humidity, wind):
     delta = 4098 * es / ((T + 237.3) ** 2)
     P = 101.3 * (((293 - 0.0065 * ELEVATION) / 293) ** 5.26)
     gamma = 0.000665 * P
+
     return ((0.408 * delta * Rn) + (gamma * 900 / (T + 273) * u2 * (es - ea))) / (delta + gamma * (1 + 0.34 * u2))
 
 @app.get("/predicted-moisture")
