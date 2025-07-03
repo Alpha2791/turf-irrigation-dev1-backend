@@ -109,7 +109,6 @@ def predicted_moisture():
         irrig_entries = db.query(IrrigationLog).all()
         db.close()
 
-        # Convert logs to DataFrames
         df_moist = pd.DataFrame([{"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moist_entries])
         df_irrig = pd.DataFrame([{"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrig_entries])
 
@@ -117,7 +116,6 @@ def predicted_moisture():
             print("[ERROR] No moisture log data found.")
             return []
 
-        # Timestamp + numeric enforcement
         df_moist["timestamp"] = pd.to_datetime(df_moist["timestamp"]).dt.tz_localize(None)
         df_moist["moisture_mm"] = pd.to_numeric(df_moist["moisture_mm"], errors="coerce")
         df_moist.dropna(subset=["moisture_mm"], inplace=True)
@@ -173,7 +171,7 @@ def predicted_moisture():
         print("[DEBUG] Forecast dataframe shape:", df.shape)
 
         results = [{
-            "timestamp": latest_log_ts.strftime("%Y-%m-%dT%H:%M"),
+            "timestamp": latest_log_ts.isoformat(),
             "ET_mm_hour": 0,
             "rainfall_mm": 0,
             "irrigation_mm": 0,
@@ -192,7 +190,7 @@ def predicted_moisture():
             last_pred = predicted
 
             results.append({
-                "timestamp": ts.strftime("%Y-%m-%dT%H:%M"),
+                "timestamp": ts.isoformat(),
                 "ET_mm_hour": round(et, 3),
                 "rainfall_mm": round(rain, 2),
                 "irrigation_mm": round(irr, 2),
@@ -208,6 +206,7 @@ def predicted_moisture():
     except Exception as e:
         print(f"[ERROR] {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
 
 
 @app.get("/wilt-forecast")
