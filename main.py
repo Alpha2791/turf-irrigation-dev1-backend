@@ -134,8 +134,8 @@ def predicted_moisture():
             parse_dates=["timestamp"]
         )
 
-        forecast_df.sort_values("timestamp", inplace=True)
-        print("[DEBUG] Forecast dataframe shape:", forecast_df.shape)
+        # Ensure nulls don't break float conversion
+        forecast_df.fillna({"ET_mm_hour": 0.0, "rainfall_mm": 0.0}, inplace=True)
 
         # Build hourly predictions
         results = [{
@@ -146,10 +146,10 @@ def predicted_moisture():
             "predicted_moisture_mm": float(round(last_pred, 1))
         }]
 
-        for _, row in forecast_df.iterrows():
+        for i, row in forecast_df.iterrows():
             t = row["timestamp"]
-            et = float(row.get("ET_mm_hour", 0.0))
-            rain = float(row.get("rainfall_mm", 0.0))
+            et = float(row["ET_mm_hour"])
+            rain = float(row["rainfall_mm"])
 
             irr = 0.0
             if not irrigation_logs.empty:
@@ -157,7 +157,7 @@ def predicted_moisture():
                 if not irr_logs.empty:
                     irr = float(irr_logs["irrigation_mm"].sum())
 
-            last_pred = max(0, last_pred - et + rain + irr)
+           last_pred = max(0, last_pred - et + rain + irr)
 
             results.append({
                 "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S"),
