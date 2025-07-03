@@ -1,8 +1,11 @@
-from fastapi import FastAPI, Body, HTTPException
+from fastapi import FastAPI, Body, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
+import joblib
+import xgboost as xgb
 import numpy as np
 import os
 from models import MoistureLog, IrrigationLog, WeatherHistory, PredictionMeta
@@ -12,32 +15,52 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://turf-irrigation-dev1.netlify.app", "http://localhost:3000"],
+    allow_origins=[
+        "https://turf-irrigation-dev1.netlify.app/", 
+        "http://localhost:3000"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-LATITUDE = 52.281624
-LONGITUDE = -0.943448
-ELEVATION = 95
+MODEL_FILE = "moisture_model.pkl"
+LATITUDE = 50.415642
+LONGITUDE = -5.092041
+ELEVATION = 39
 VC_API_KEY = "2ELL5E9A47JT5XB74WGXS7PFV"
-ML_THRESHOLD = 365
 
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(bind=engine)
 
-@app.get("/logging-progress")
-def logging_progress():
-    db = SessionLocal()
-    count = db.query(MoistureLog).count()
-    db.close()
-    return {
-        "current_samples": count,
-        "target_for_ml": ML_THRESHOLD,
-        "ml_status": "enabled" if count >= ML_THRESHOLD else "disabled"
-    }
+def get_last_weather_timestamp(db):
+    entry = db.query(PredictionMeta).filter_by(key="last_weather_timestamp").first()
+    return datetime.fromisoformat(entry.value) if entry else None
+
+def set_last_weather_timestamp(db, timestamp):
+    entry = db.query(PredictionMeta).filter_by(key="last_weather_timestamp").first()
+    if entry:
+        entry.value = timestamp.isoformat()
+    else:
+        entry = PredictionMeta(key="last_weather_timestamp", value=timestamp.isoformat())
+        db.add(entry)
+    db.commit()
+
+def calculate_et_fao56(solar_w_m2, temp, humidity, wind):
+    # Convert solar radiation from W/m^2 to MJ/m^2/hr
+    Rs = (solar_w_m2 * 3600) / 1_000_000
+    Rn = 0.408 * Rs  # Net radiation
+    T = temp
+    u2 = wind
+    es = 0.6108 * np.exp((17.27 * T) / (T + 237.3))
+    ea = es * (humidity / 100.0)
+    delta = 4098 * es / ((T + 237.3) ** 2)
+    P = 101.3 * (((293 - 0.0065 * ELEVATION) / 293) ** 5.26)
+    gamma = 0.000665 * P
+    eto = ((0.408 * delta * Rn) + (gamma * 900 / (T + 273) * u2 * (es - ea))) / \
+          (delta + gamma * (1 + 0.34 * u2))
+    return max(0.0, eto)
 
 @app.get("/moisture-log")
 def get_moisture_log():
@@ -54,7 +77,7 @@ def get_irrigation_log():
     return [{"timestamp": e.timestamp.isoformat(), "irrigation_mm": e.irrigation_mm} for e in entries]
 
 @app.post("/log-moisture")
-def log_moisture(timestamp: str = Body(...), moisture_mm: float = Body(...)):
+def log_moisture(request: Request, timestamp: str = Body(...), moisture_mm: float = Body(...)):
     db = SessionLocal()
     dt = datetime.fromisoformat(timestamp)
     entry = MoistureLog(timestamp=dt, moisture_mm=moisture_mm)
@@ -64,7 +87,7 @@ def log_moisture(timestamp: str = Body(...), moisture_mm: float = Body(...)):
     return {"status": "moisture logged"}
 
 @app.post("/log-irrigation")
-def log_irrigation(timestamp: str = Body(...), irrigation_mm: float = Body(...)):
+def log_irrigation(request: Request, timestamp: str = Body(...), irrigation_mm: float = Body(...)):
     db = SessionLocal()
     dt = datetime.fromisoformat(timestamp)
     entry = IrrigationLog(timestamp=dt, irrigation_mm=irrigation_mm)
@@ -73,123 +96,163 @@ def log_irrigation(timestamp: str = Body(...), irrigation_mm: float = Body(...))
     db.close()
     return {"status": "irrigation logged"}
 
-def calculate_et_fao56(solar_w_m2, temp, humidity, wind):
-    """
-    FAO-56 Penman-Monteith ET₀ hourly calculation, with correct unit conversions.
-    Inputs:
-        solar_w_m2 - Solar radiation in W/m² (from Visual Crossing)
-        temp - Air temperature (°C)
-        humidity - Relative humidity (%)
-        wind - Wind speed (m/s)
-    Returns:
-        ET₀ in mm/hour
-    """
-    # Convert solar from W/m² to MJ/m²/hour
-    solar_mj_m2_hr = (solar_w_m2 * 3600) / 1_000_000
-    Rn = 0.408 * solar_mj_m2_hr  # Net radiation (MJ/m²/hour)
-
-    T = temp
-    u2 = wind
-    es = 0.6108 * np.exp((17.27 * T) / (T + 237.3))
-    ea = es * (humidity / 100)
-    delta = 4098 * es / ((T + 237.3) ** 2)
-    P = 101.3 * (((293 - 0.0065 * ELEVATION) / 293) ** 5.26)
-    gamma = 0.000665 * P
-
-    eto = ((0.408 * delta * Rn) + (gamma * 900 / (T + 273) * u2 * (es - ea))) / (
-        delta + gamma * (1 + 0.34 * u2)
-    )
-    return max(0.0, eto)  # Ensure ET cannot be negative
-
 @app.get("/predicted-moisture")
 def predicted_moisture():
+    return get_predicted_moisture()
+
+def get_predicted_moisture():
+    print("[INFO] Running /predicted-moisture")
     try:
+        if not os.path.exists(MODEL_FILE):
+            return []
+
+        model = joblib.load(MODEL_FILE)
         db = SessionLocal()
+        now = datetime.utcnow()
 
-        # Load moisture and irrigation logs
-        moisture_logs = pd.read_sql(db.query(MoistureLog).statement, db.bind, parse_dates=["timestamp"])
-        irrigation_logs = pd.read_sql(db.query(IrrigationLog).statement, db.bind, parse_dates=["timestamp"])
+        moist_entries = db.query(MoistureLog).order_by(MoistureLog.timestamp.asc()).all()
+        irrig_entries = db.query(IrrigationLog).all()
 
-        if moisture_logs.empty:
-            raise HTTPException(status_code=404, detail="No moisture data available")
+        df_moist = pd.DataFrame([
+            {"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moist_entries
+        ]).set_index("timestamp") if moist_entries else pd.DataFrame(columns=["moisture_mm"])
 
-        # Sort and get last entry
-        moisture_logs.sort_values("timestamp", inplace=True)
-        latest_log = moisture_logs.iloc[-1]
-        latest_log_ts = latest_log["timestamp"]
-        last_pred = latest_log["moisture_mm"]
+        df_irrig = pd.DataFrame([
+            {"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrig_entries
+        ]).set_index("timestamp") if irrig_entries else pd.DataFrame(columns=["irrigation_mm"])
 
-        print("[DEBUG] Last few moisture logs:\n", moisture_logs.tail())
-        print("[DEBUG] Starting moisture for forecast:", last_pred)
-
-        # Forecast period: next 5 days
-        now = datetime.now().replace(minute=0, second=0, microsecond=0)
+        latest_log_ts = df_moist.index[-1] if not df_moist.empty else now
+        weather_start = latest_log_ts
         forecast_end = now + timedelta(days=5)
-        forecast_df = pd.read_sql(
-            db.query(WeatherHistory)
-              .filter(WeatherHistory.timestamp >= latest_log_ts)
-              .filter(WeatherHistory.timestamp <= forecast_end)
-              .statement,
-            db.bind,
-            parse_dates=["timestamp"]
+
+        start_date = weather_start.strftime("%Y-%m-%d")
+        end_date = forecast_end.strftime("%Y-%m-%d")
+
+        url = (
+            f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/"
+            f"{LATITUDE},{LONGITUDE}/{start_date}/{end_date}"
+            f"?unitGroup=metric&key={VC_API_KEY}&include=hours"
+            f"&elements=datetime,temp,humidity,windspeed,solarradiation,precip"
         )
 
-        # Ensure nulls don't break float conversion
-        forecast_df.fillna({"ET_mm_hour": 0.0, "rainfall_mm": 0.0}, inplace=True)
+        response = requests.get(url)
+        data = response.json()
 
-        # Build hourly predictions
-        results = [{
-            "timestamp": (latest_log_ts - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%S"),
-            "ET_mm_hour": 0.0,
-            "rainfall_mm": 0.0,
-            "irrigation_mm": 0.0,
-            "predicted_moisture_mm": float(round(last_pred, 1))
-        }]
+        weather_data = []
+        new_ts = None
 
-        for i, row in forecast_df.iterrows():
-            t = row["timestamp"]
-            et = float(row["ET_mm_hour"])
-            rain = float(row["rainfall_mm"])
+        for day in data.get("days", []):
+            for hour in day.get("hours", []):
+                raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
+                timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
+                solar = hour.get("solarradiation", 0) or 0
+                temp = hour.get("temp", 0) or 0
+                rh = hour.get("humidity", 0) or 0
+                wind = hour.get("windspeed", 0) or 0
+                et = round(calculate_et_fao56(solar, temp, rh, wind), 3)
 
-            irr = 0.0
-            if not irrigation_logs.empty:
-                irr_logs = irrigation_logs[irrigation_logs["timestamp"] == t]
-                if not irr_logs.empty:
-                    irr = float(irr_logs["irrigation_mm"].sum())
+                weather_data.append({
+                    "timestamp": raw_ts,
+                    "ET_mm_hour": et,
+                    "rainfall_mm": hour.get("precip", 0) or 0
+                })
 
-           last_pred = max(0, last_pred - et + rain + irr)
+                if not db.query(WeatherHistory).filter_by(timestamp=timestamp).first():
+                    try:
+                        db.add(WeatherHistory(
+                            timestamp=timestamp,
+                            et_mm_hour=et,
+                            rainfall_mm=hour.get("precip", 0),
+                            solar_radiation=solar,
+                            temp_c=temp,
+                            humidity=rh,
+                            windspeed=wind,
+                        ))
+                        new_ts = timestamp
+                    except Exception as e:
+                        db.rollback()
+                        print(f"[SKIP] Failed to add weather entry for {timestamp}: {e}")
 
-            results.append({
-                "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S"),
-                "ET_mm_hour": et,
-                "rainfall_mm": rain,
-                "irrigation_mm": irr,
-                "predicted_moisture_mm": float(round(last_pred, 1))
-            })
-
-        print("[DEBUG] First 3 result rows:")
-        print(results[:3])
+        if new_ts:
+            set_last_weather_timestamp(db, new_ts)
 
         db.close()
+
+        df_weather = pd.DataFrame(weather_data)
+        df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"], format="%Y-%m-%dT%H:%M", errors="coerce")
+        df_weather.dropna(subset=["timestamp"], inplace=True)
+        df_weather.set_index("timestamp", inplace=True)
+
+        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
+        df = df.sort_index()
+
+        print("[INFO] Forecast dataframe shape:", df.shape)
+
+        results = []
+        sample_count = len(df_moist)
+        last_pred = df_moist.iloc[-1]["moisture_mm"] if not df_moist.empty else 25.0
+        latest_log_ts = df_moist.index[-1] if not df_moist.empty else None
+
+        for ts, row in df.iterrows():
+            hour = ts.hour
+            dayofyear = ts.dayofyear
+            irrigation_mm = row["irrigation_mm"]
+            rainfall_mm = row.get("rainfall_mm", 0)
+            et_mm = row.get("ET_mm_hour", 0)
+
+            features = pd.DataFrame([{
+                "prev_moisture": last_pred,
+                "irrigation_mm": irrigation_mm,
+                "hour": hour,
+                "dayofyear": dayofyear
+            }])
+
+            hours_since_last_log = (ts - latest_log_ts).total_seconds() / 3600 if latest_log_ts else float("inf")
+
+            if sample_count < 15 or hours_since_last_log > 48:
+                predicted_moisture = last_pred - et_mm + rainfall_mm + irrigation_mm
+            else:
+                model_pred = model.predict(features)[0]
+                basic_estimate = last_pred - et_mm + rainfall_mm + irrigation_mm
+                alpha = min(sample_count / 100, 0.8)
+                predicted_moisture = (alpha * model_pred) + ((1 - alpha) * basic_estimate)
+
+            predicted_moisture = max(min(float(predicted_moisture), 100), 0)
+            last_pred = predicted_moisture
+
+            results.append({
+                "timestamp": ts.strftime("%Y-%m-%dT%H"),
+                "ET_mm_hour": round(et_mm, 3),
+                "rainfall_mm": round(rainfall_mm, 2),
+                "irrigation_mm": round(irrigation_mm, 2),
+                "predicted_moisture_mm": round(predicted_moisture, 1)
+            })
+
+        print(f"[INFO] Returning {len(results)} predicted moisture points")
         return results
 
     except Exception as e:
-        print(f"[ERROR] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        print(f"[ERROR] Unexpected error in predicted moisture: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
 @app.get("/wilt-forecast")
-def wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
-    predictions = predicted_moisture()
+def get_wilt_forecast(wilt_point: float = 18.0, upper_limit: float = 22.0):
+    predictions = get_predicted_moisture()
+
     for row in predictions:
-        if row["predicted_moisture_mm"] < wilt_point:
-            ts = row["timestamp"]
-            rec = upper_limit - row["predicted_moisture_mm"]
+        moisture = row.get("predicted_moisture_mm")
+        if moisture is None:
+            continue
+        if moisture < wilt_point:
+            ts = row.get("timestamp", "unknown time")
+            rec_irrig = upper_limit - moisture
             return {
                 "wilt_point_hit": ts,
-                "recommended_irrigation_mm": round(rec, 1),
+                "recommended_irrigation_mm": round(rec_irrig, 1),
                 "upper_limit": upper_limit,
-                "message": f"Apply approx {round(rec, 1)} mm to reach {upper_limit}%"
+                "message": f"Apply approx {round(rec_irrig, 1)} mm to reach {upper_limit}%"
             }
+
     return {
         "wilt_point_hit": None,
         "recommended_irrigation_mm": None,
