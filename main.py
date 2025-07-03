@@ -100,7 +100,7 @@ def predicted_moisture():
             print("[ERROR] No moisture log data found.")
             return []
 
-        # Timestamp processing
+        # Timestamp + numeric enforcement
         df_moist["timestamp"] = pd.to_datetime(df_moist["timestamp"]).dt.tz_localize(None)
         df_moist["moisture_mm"] = pd.to_numeric(df_moist["moisture_mm"], errors="coerce")
         df_moist.dropna(subset=["moisture_mm"], inplace=True)
@@ -119,7 +119,6 @@ def predicted_moisture():
         if last_pred <= 0:
             raise HTTPException(status_code=500, detail="Invalid starting moisture value (0 or less)")
 
-        # Weather forecast range
         now = datetime.utcnow()
         forecast_end = now + timedelta(days=5)
 
@@ -156,9 +155,8 @@ def predicted_moisture():
 
         print("[DEBUG] Forecast dataframe shape:", df.shape)
 
-        # Results
         results = [{
-            "timestamp": latest_log_ts.strftime("%Y-%m-%dT%H"),
+            "timestamp": latest_log_ts.strftime("%Y-%m-%dT%H:%M"),
             "ET_mm_hour": 0,
             "rainfall_mm": 0,
             "irrigation_mm": 0,
@@ -171,18 +169,23 @@ def predicted_moisture():
             irr = row["irrigation_mm"]
 
             predicted = last_pred - et + rain + irr
+            if not np.isfinite(predicted):
+                predicted = 0.0
             predicted = max(min(float(predicted), 100), 0)
             last_pred = predicted
 
             results.append({
-                "timestamp": ts.strftime("%Y-%m-%dT%H"),
+                "timestamp": ts.strftime("%Y-%m-%dT%H:%M"),
                 "ET_mm_hour": round(et, 3),
                 "rainfall_mm": round(rain, 2),
                 "irrigation_mm": round(irr, 2),
                 "predicted_moisture_mm": round(predicted, 1)
             })
 
-        print(f"[DEBUG] Generated {len(results)} predicted moisture entries.")
+        print("[DEBUG] First 3 result rows:")
+        for r in results[:3]:
+            print(r)
+
         return results
 
     except Exception as e:
