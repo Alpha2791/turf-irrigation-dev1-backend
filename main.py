@@ -92,19 +92,34 @@ def predicted_moisture():
         irrig_entries = db.query(IrrigationLog).all()
         db.close()
 
+        # Convert logs to DataFrames
         df_moist = pd.DataFrame([{"timestamp": e.timestamp, "moisture_mm": e.moisture_mm} for e in moist_entries])
         df_irrig = pd.DataFrame([{"timestamp": e.timestamp, "irrigation_mm": e.irrigation_mm} for e in irrig_entries])
 
         if df_moist.empty:
+            print("[ERROR] No moisture log data found.")
             return []
 
+        # Timestamp processing
         df_moist["timestamp"] = pd.to_datetime(df_moist["timestamp"]).dt.tz_localize(None)
+        df_moist["moisture_mm"] = pd.to_numeric(df_moist["moisture_mm"], errors="coerce")
+        df_moist.dropna(subset=["moisture_mm"], inplace=True)
         df_moist.set_index("timestamp", inplace=True)
 
         df_irrig["timestamp"] = pd.to_datetime(df_irrig["timestamp"]).dt.tz_localize(None)
         df_irrig.set_index("timestamp", inplace=True)
 
+        print("[DEBUG] Last few moisture logs:\n", df_moist.tail())
+
         latest_log_ts = df_moist.index[-1]
+        last_pred = df_moist.iloc[-1]["moisture_mm"]
+
+        print("[DEBUG] Starting moisture for forecast:", last_pred)
+
+        if last_pred <= 0:
+            raise HTTPException(status_code=500, detail="Invalid starting moisture value (0 or less)")
+
+        # Weather forecast range
         now = datetime.utcnow()
         forecast_end = now + timedelta(days=5)
 
@@ -135,24 +150,20 @@ def predicted_moisture():
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"]).dt.tz_localize(None)
         df_weather.set_index("timestamp", inplace=True)
 
-        # Join weather + irrigation, and fill missing rainfall/irrigation with 0
         df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0, "rainfall_mm": 0})
-
-        # Keep only forecast data at or after the last logged moisture
         df = df[df.index >= latest_log_ts]
         df = df.sort_index()
 
-        results = []
-        last_pred = df_moist.iloc[-1]["moisture_mm"]
+        print("[DEBUG] Forecast dataframe shape:", df.shape)
 
-        # Add the real logged moisture as the start of the forecast
-        results.append({
+        # Results
+        results = [{
             "timestamp": latest_log_ts.strftime("%Y-%m-%dT%H"),
             "ET_mm_hour": 0,
             "rainfall_mm": 0,
             "irrigation_mm": 0,
             "predicted_moisture_mm": round(last_pred, 1)
-        })
+        }]
 
         for ts, row in df.iterrows():
             et = row["ET_mm_hour"]
@@ -171,11 +182,12 @@ def predicted_moisture():
                 "predicted_moisture_mm": round(predicted, 1)
             })
 
+        print(f"[DEBUG] Generated {len(results)} predicted moisture entries.")
         return results
 
     except Exception as e:
+        print(f"[ERROR] {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
-
 
 
 @app.get("/wilt-forecast")
