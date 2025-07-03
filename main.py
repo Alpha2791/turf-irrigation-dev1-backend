@@ -128,21 +128,24 @@ def predicted_moisture():
                 df_weather.append({
                     "timestamp": timestamp,
                     "ET_mm_hour": round(et, 3),
-                    "rainfall_mm": hour.get("precip", 0),
+                    "rainfall_mm": hour.get("precip", 0) or 0
                 })
 
         df_weather = pd.DataFrame(df_weather)
         df_weather["timestamp"] = pd.to_datetime(df_weather["timestamp"]).dt.tz_localize(None)
         df_weather.set_index("timestamp", inplace=True)
 
-        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0})
-        df = df[df.index > latest_log_ts]  # only future predictions
+        # Join weather + irrigation, and fill missing rainfall/irrigation with 0
+        df = df_weather.join(df_irrig, how="left").fillna({"irrigation_mm": 0, "rainfall_mm": 0})
+
+        # Keep only forecast data at or after the last logged moisture
+        df = df[df.index >= latest_log_ts]
         df = df.sort_index()
 
         results = []
         last_pred = df_moist.iloc[-1]["moisture_mm"]
 
-        # Inject real logged value as starting point
+        # Add the real logged moisture as the start of the forecast
         results.append({
             "timestamp": latest_log_ts.strftime("%Y-%m-%dT%H"),
             "ET_mm_hour": 0,
@@ -172,6 +175,7 @@ def predicted_moisture():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
 
 
 @app.get("/wilt-forecast")
