@@ -16,7 +16,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://turf-irrigation-dev1.netlify.app/", 
+        "https://turf-irrigation-dev1.netlify.app", 
         "http://localhost:3000"
     ],
     allow_credentials=True,
@@ -149,7 +149,7 @@ def get_predicted_moisture():
                 temp = hour.get("temp", 0) or 0
                 rh = hour.get("humidity", 0) or 0
                 wind = hour.get("windspeed", 0) or 0
-                et = round(calculate_et_fao56(solar, temp, rh, wind), 3)
+                et = float(round(0.408 * solar_radiation / 1000, 3))
 
                 weather_data.append({
                     "timestamp": raw_ts,
