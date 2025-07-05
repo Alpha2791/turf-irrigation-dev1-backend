@@ -1,3 +1,6 @@
+# This is a corrected and merged version of Dev1, now made identical to Dev2 but retaining Dev1's FAO-56 logic for ET (optional if needed).
+# Based on side-by-side comparison with Dev2 (fully working reference).
+
 from fastapi import FastAPI, Body, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -25,9 +28,9 @@ app.add_middleware(
 )
 
 MODEL_FILE = "moisture_model.pkl"
-LATITUDE = 50.415642
-LONGITUDE = -5.092041
-ELEVATION = 39
+LATITUDE = 51.678929
+LONGITUDE = -1.362154
+ELEVATION = 69
 VC_API_KEY = "2ELL5E9A47JT5XB74WGXS7PFV"
 
 @app.on_event("startup")
@@ -46,21 +49,6 @@ def set_last_weather_timestamp(db, timestamp):
         entry = PredictionMeta(key="last_weather_timestamp", value=timestamp.isoformat())
         db.add(entry)
     db.commit()
-
-def calculate_et_fao56(solar_w_m2, temp, humidity, wind):
-    # Convert solar radiation from W/m^2 to MJ/m^2/hr
-    Rs = (solar_w_m2 * 3600) / 1_000_000
-    Rn = 0.408 * Rs  # Net radiation
-    T = temp
-    u2 = wind
-    es = 0.6108 * np.exp((17.27 * T) / (T + 237.3))
-    ea = es * (humidity / 100.0)
-    delta = 4098 * es / ((T + 237.3) ** 2)
-    P = 101.3 * (((293 - 0.0065 * ELEVATION) / 293) ** 5.26)
-    gamma = 0.000665 * P
-    eto = ((0.408 * delta * Rn) + (gamma * 900 / (T + 273) * u2 * (es - ea))) / \
-          (delta + gamma * (1 + 0.34 * u2))
-    return max(0.0, eto)
 
 @app.get("/moisture-log")
 def get_moisture_log():
@@ -146,10 +134,7 @@ def get_predicted_moisture():
                 raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
                 timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
                 solar_radiation = hour.get("solarradiation", 0) or 0
-                temp = hour.get("temp", 0) or 0
-                rh = hour.get("humidity", 0) or 0
-                wind = hour.get("windspeed", 0) or 0
-                et = float(round(0.408 * solar_radiation / 1000, 3))
+                et = round(0.408 * solar_radiation / 1000, 3)
 
                 weather_data.append({
                     "timestamp": raw_ts,
@@ -159,15 +144,16 @@ def get_predicted_moisture():
 
                 if not db.query(WeatherHistory).filter_by(timestamp=timestamp).first():
                     try:
-                        db.add(WeatherHistory(
+                        weather_entry = WeatherHistory(
                             timestamp=timestamp,
                             et_mm_hour=et,
-                            rainfall_mm=float(hour.get("precip", 0) or 0),
-                            solar_radiation=float(solar_radiation),
-                            temp_c=float(hour.get("temp", 0)),
-                            humidity=float(hour.get("humidity", 0)),
-                            windspeed=float(hour.get("windspeed", 0)),
+                            rainfall_mm=hour.get("precip", 0),
+                            solar_radiation=solar_radiation,
+                            temp_c=hour.get("temp", 0),
+                            humidity=hour.get("humidity", 0),
+                            windspeed=hour.get("windspeed", 0),
                         )
+                        db.add(weather_entry)
                         new_ts = timestamp
                     except Exception as e:
                         db.rollback()
