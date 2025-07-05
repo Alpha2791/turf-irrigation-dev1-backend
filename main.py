@@ -145,7 +145,7 @@ def get_predicted_moisture():
             for hour in day.get("hours", []):
                 raw_ts = f"{day['datetime']}T{hour['datetime'][:5]}"
                 timestamp = datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M")
-                solar = hour.get("solarradiation", 0) or 0
+                solar_radiation = hour.get("solarradiation", 0) or 0
                 temp = hour.get("temp", 0) or 0
                 rh = hour.get("humidity", 0) or 0
                 wind = hour.get("windspeed", 0) or 0
