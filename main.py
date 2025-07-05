@@ -162,12 +162,12 @@ def get_predicted_moisture():
                         db.add(WeatherHistory(
                             timestamp=timestamp,
                             et_mm_hour=et,
-                            rainfall_mm=hour.get("precip", 0),
-                            solar_radiation=solar,
-                            temp_c=temp,
-                            humidity=rh,
-                            windspeed=wind,
-                        ))
+                            rainfall_mm=float(hour.get("precip", 0) or 0),
+                            solar_radiation=float(solar_radiation),
+                            temp_c=float(hour.get("temp", 0)),
+                            humidity=float(hour.get("humidity", 0)),
+                            windspeed=float(hour.get("windspeed", 0)),
+                        )
                         new_ts = timestamp
                     except Exception as e:
                         db.rollback()
